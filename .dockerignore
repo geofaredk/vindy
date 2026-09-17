@@ -1,0 +1,8 @@
+node_modules
+.cache
+.claude
+.git
+.gitignore
+Dockerfile
+docker-compose.yml
+*.log

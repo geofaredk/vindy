@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="da">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Vindy — vejrkort over Danmark</title>
+  <meta name="description" content="Interaktivt vejrkort over Danmark baseret på DMI's frie data og EUMETNET OPERA-radarkompositten.">
+  <link rel="icon" type="image/svg+xml" href="/img/vindy-light.svg">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <meta name="theme-color" content="#0b0e14">
+  <link rel="apple-touch-icon" href="/img/icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Vindy">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="/vendor/leaflet/leaflet.css">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+  <div id="map" aria-label="Vejrkort over Danmark"></div>
+
+  <header class="topbar">
+    <div class="logo" title="Vindy — vejrkort over Danmark" role="img" aria-label="Vindy">
+      <img src="/img/vindy-light.svg" alt="" width="44" height="44">
+    </div>
+    <button id="info-btn" class="square-btn" aria-label="Om Vindy og datakilder" aria-haspopup="dialog" title="Om Vindy og datakilder">
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></svg>
+    </button>
+    <div class="search-wrap">
+      <svg viewBox="0 0 24 24" width="16" height="16" class="search-ico" aria-hidden="true"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 16l4.5 4.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <input id="search" type="search" placeholder="Søg sted eller adresse…" autocomplete="off" aria-label="Søg efter steder og adresser">
+      <div id="search-results" class="search-results" hidden></div>
+    </div>
+  </header>
+
+  <button id="menu-tab" class="menu-tab" aria-controls="menu" aria-expanded="false" title="Vis vejrlag">
+    <svg class="tab-chev" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+    <span id="menu-current" class="menu-current"></span>
+  </button>
+  <aside id="menu" class="drawer" aria-label="Vejrlag">
+    <div class="drawer-head">
+      <span class="drawer-title">Vejrlag</span>
+      <button id="menu-close" class="icon-btn" aria-label="Skjul vejrlag" title="Skjul vejrlag">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+    <div class="drawer-body">
+      <div id="menu-layers"></div>
+      <div class="menu-group"><div class="menu-title">Overlag</div><div id="menu-toggles"></div></div>
+      <div id="install-group" class="menu-group" hidden>
+        <button id="install-btn" class="menu-item" type="button">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M12 7v7M9 11l3 3 3-3"/></svg>
+          Installer Vindy som app
+        </button>
+      </div>
+    </div>
+  </aside>
+
+  <div id="info" class="modal" role="dialog" aria-modal="true" aria-labelledby="info-title" hidden>
+    <div class="modal-card">
+      <div class="modal-head">
+        <div class="modal-brand">
+          <img src="/img/vindy-light.svg" alt="" width="36" height="36" class="modal-logo">
+          <div><h2 id="info-title">Vindy</h2><div class="modal-sub">Vejrkort over Danmark</div></div>
+        </div>
+        <button id="info-close" class="icon-btn" aria-label="Luk">✕</button>
+      </div>
+      <div class="modal-body">
+        <p>Vindy er et interaktivt vejrkort over Danmark med prognoser, observationer og radar. Al vejrinformation kommer fra DMI's frie data, den europæiske radarkomposit fra EUMETNET og satellitbilleder fra EUMETSAT. Serveren henter data direkte fra kilderne.</p>
+
+        <h3>Aktuelle data (dansk tid)</h3>
+        <dl id="info-status" class="info-status"></dl>
+
+        <h3>Vejrdata</h3>
+        <ul class="sources">
+          <li><b>DMI HARMONIE DINI</b> — DMI's vejrmodel. Opdateres hver 3. time med prognoser 60 timer frem. Bruges til vind, vindstød, regn, temperatur, dugpunkt, skydække, lave skyer, lufttryk, luftfugtighed, sigtbarhed og CAPE, samt til punktprognoser. Vises med 2 km opløsning over Danmark og 6 km i området omkring.</li>
+          <li><b>Isobarer og høj-/lavtryk</b> — beregnet af Vindy ud fra HARMONIE-modellens lufttryk ved havniveau.</li>
+          <li><b>Vejrfronter</b> — beregnet automatisk af Vindy ud fra HARMONIE-modellens våd-termometer-potentielle temperatur (θw) og vind i 850 hPa (termisk frontparameter). Det er ikke DMI's officielle frontanalyse, og fronterne kan afvige fra en meteorologs vejrkort.</li>
+          <li><b>DMI WAM</b> — DMI's bølgemodel for de danske farvande: bølgehøjde og -retning.</li>
+          <li><b>DMI's målestationer</b> (metObs) — observationer fra den seneste time, opdateres hvert 5. minut.</li>
+          <li><b>EUMETSAT EUMETView</b> — satellitbilleder i ægte farver fra MTG-I (Meteosat Third Generation), hvert 10. minut for de seneste 3 timer. Kun synlige i dagslys.</li>
+          <li><b>EUMETNET OPERA</b> — europæisk radarkomposit (maksimal reflektivitet) hvert 5. minut for de seneste 3 timer. Licens: CC BY 4.0.</li>
+        </ul>
+
+        <h3>Kilder og ophavsret</h3>
+        <ul class="credits">
+          <li>Vejrdata © <a href="https://www.dmi.dk/friedata" target="_blank" rel="noopener">DMI</a> — <a href="https://www.dmi.dk/friedata/dokumentation/terms-of-use" target="_blank" rel="noopener">vilkår for DMI's frie data</a></li>
+          <li>Radar © <a href="https://www.eumetnet.eu/activities/observations-programme/current-activities/opera/" target="_blank" rel="noopener">EUMETNET OPERA</a> via Open Radar Data — <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a></li>
+          <li>Satellitbilleder © <a href="https://view.eumetsat.int" target="_blank" rel="noopener">EUMETSAT</a> (EUMETView, MTG-I FCI True Colour RGB)</li>
+          <li>Baggrundskort © <a href="https://www.esri.com" target="_blank" rel="noopener">Esri</a>, HERE, Garmin, © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap-bidragydere</a></li>
+          <li>Kystlinjer og landegrænser: <a href="https://www.soest.hawaii.edu/pwessel/gshhg/" target="_blank" rel="noopener">GSHHG/WDBII</a> (Wessel &amp; Smith, NOAA/SOEST, LGPL)</li>
+          <li>Danske stednavne, adresser samt kommune- og regionsgrænser (DAGI): <a href="https://dataforsyningen.dk" target="_blank" rel="noopener">Dataforsyningen</a></li>
+          <li>Øvrig stedsøgning: <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a> af Komoot, data © OpenStreetMap-bidragydere (ODbL)</li>
+          <li>Kortvisning: <a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a></li>
+        </ul>
+
+        <h3>Sådan bruger du kortet</h3>
+        <ul class="howto">
+          <li>Klik et sted på kortet for en timeprognose. Klik på en station for de seneste målinger.</li>
+          <li>Træk i tidslinjen, eller tryk <kbd>Mellemrum</kbd> for at afspille og <kbd>←</kbd> <kbd>→</kbd> for at skifte time.</li>
+          <li><kbd>Esc</kbd> lukker prognosen og dette vindue.</li>
+          <li>Installer Vindy som app: I Chrome og Edge vælger du <b>Installer Vindy som app</b> nederst i menuen Vejrlag. På iPhone og iPad trykker du på <b>Del</b> i Safari og vælger <b>Føj til hjemmeskærm</b>.</li>
+          <li>Adressen viser vejrlaget og kortudsnittet, fx <code>/wind/55.68,12.57,9</code>, så du kan gemme eller dele en bestemt visning.</li>
+        </ul>
+
+        <p class="disclaimer">Vindy er et uofficielt projekt og er ikke tilknyttet DMI eller EUMETNET. Brug ikke kortet som eneste grundlag for sikkerhedskritiske beslutninger.</p>
+      </div>
+    </div>
+  </div>
+
+  <div id="readout" class="readout" hidden></div>
+  <div id="busy" class="busy" hidden><span class="spinner"></span></div>
+  <div id="error" class="toast" role="status" hidden></div>
+  <div id="boot" class="boot" hidden><span class="spinner"></span> Henter vejrdata…</div>
+
+  <section id="forecast" class="forecast" hidden aria-label="Punktprognose"></section>
+
+  <div id="export" class="modal" role="dialog" aria-modal="true" aria-labelledby="export-title" hidden>
+    <div class="modal-card export-card">
+      <div class="modal-head">
+        <h2 id="export-title" class="export-title">Download kort</h2>
+        <button id="export-close" class="icon-btn" aria-label="Luk">✕</button>
+      </div>
+      <div class="export-body">
+        <div class="seg" role="radiogroup" aria-label="Billedtype">
+          <button type="button" role="radio" data-variant="meta" aria-checked="true" class="on">Med metadata<small>logo, tid, modelkørsel og kilder</small></button>
+          <button type="button" role="radio" data-variant="plain" aria-checked="false">Kun kort<small>kun det, der vises på kortet</small></button>
+        </div>
+        <div class="export-preview"><img id="export-img" alt="Forhåndsvisning af billedet"></div>
+        <div class="export-foot">
+          <span id="export-status" class="export-status"></span>
+          <button id="export-download" class="primary-btn" type="button">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+            Download PNG
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="ui-hint" class="ui-hint" role="status" hidden>Brugerfladen er skjult · tryk <kbd>Esc</kbd> for at vise den igen</div>
+  <button id="ui-restore" class="ui-restore" aria-label="Vis brugerfladen igen" title="Vis brugerfladen igen">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M2 12c1-2.5 5-7 10-7s9 4.5 10 7c-1 2.5-5 7-10 7S3 14.5 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+  </button>
+
+  <footer class="bottom">
+    <div class="timeline">
+      <button id="play" class="play" aria-label="Afspil"><svg viewBox="0 0 24 24" width="20" height="20"><path d="M8 5v14l11-7z" fill="currentColor"/></svg></button>
+      <div id="tl-track" class="tl-track"></div>
+    </div>
+    <div id="legend" class="legend"></div>
+  </footer>
+
+  <script src="/vendor/leaflet/leaflet.js"></script>
+  <script type="module" src="/js/app.js"></script>
+  <script src="https://scripts.withcabin.com/hello.js" async defer></script>
+</body>
+</html>
