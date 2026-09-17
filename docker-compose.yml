@@ -1,0 +1,25 @@
+services:
+  vindy:
+    build: .
+    image: vindy:latest
+    container_name: vindy
+    restart: unless-stopped
+    init: true
+    ports:
+      - "5173:5173"
+    environment:
+      PORT: "5173"
+      TZ: Europe/Copenhagen
+      # How much of each new model run to prepare in advance: off | 24h | all
+      # (24h ≈ 2 GB extra DMI download per run; only the newest run is kept on disk)
+      PREFETCH: "24h"
+    volumes:
+      - vindy-cache:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  vindy-cache:

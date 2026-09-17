@@ -1,0 +1,20 @@
+{
+  "name": "vindy",
+  "version": "1.0.0",
+  "description": "Vindy — Windy-style weather map for Denmark (DMI, EUMETNET OPERA, EUMETSAT)",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "geotiff": "^3.0.5",
+    "leaflet": "^1.9.4",
+    "proj4": "^2.22.0",
+    "undici": "^6.28.1"
+  }
+}
