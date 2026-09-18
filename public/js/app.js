@@ -201,6 +201,7 @@ async function update() {
 
   if (isObserved(state.layer)) {
     weather.setField(null, null);
+    setOverviewRain(null);
     if (state.layer === 'radar') satellite.hide(); else hideRadar();
     showObservedFrame();
     // Keep wind particles from the nearest forecast hour on top of the observation.
@@ -213,7 +214,7 @@ async function update() {
     return;
   }
   satellite.hide();
-  if (def.radar) showRadarForTime(state.time); else hideRadar();
+  if (def.radar) overviewPrecip(state.time); else { hideRadar(); setOverviewRain(null); }
   setBusy(true);
   try {
     if (def.range) state.time = rangeTimes()[1];
@@ -414,6 +415,7 @@ function prefetch() {
     if (!t) continue;
     loadField(dataLayer(state.layer), t).catch(() => {});
     if (!LAYERS[state.layer].vector && state.layer !== 'waves') loadField('windp', t).catch(() => {});
+    if (LAYERS[state.layer].radar && Date.parse(t) > Date.now()) loadField('rain', t).catch(() => {});
   }
 }
 
@@ -429,9 +431,12 @@ function nearestForecastTime(iso) {
 
 async function loadRadarFrames() {
   const r = await fetch('/api/radar/frames').then(r => r.json());
+  const firstBefore = state.radarFrames[0]?.time;
   state.radarFrames = r.frames;
   state.radarFramesAt = Date.now();
   state.radarBounds = r.bounds;
+  // The radar history moves on; Oversigt's timeline starts with it.
+  if (LAYERS[state.layer].radar && r.frames[0]?.time !== firstBefore) clampToTimeline();
   if (state.layer === 'radar' && (state.obsIndex >= r.frames.length || !state.playing)) state.obsIndex = r.frames.length - 1;
 }
 
@@ -497,6 +502,34 @@ async function showRadarForTime(time) {
     if (!radarOverlay) radarOverlay = L.imageOverlay(url, [[b.south, b.west], [b.north, b.east]], { pane: 'radar', opacity: 0.9, className: 'radar-img' }).addTo(map);
     else { radarOverlay.setUrl(url); if (!map.hasLayer(radarOverlay)) radarOverlay.addTo(map); }
   } else hideRadar();
+  renderTimelineLabel();
+}
+
+// Keep the selected hour inside the timeline (Oversigt's starts with the radar history).
+function clampToTimeline() {
+  const times = timelineDomain();
+  if (times.length && Date.parse(state.time) < Date.parse(times[0])) { state.time = times[0]; update(); }
+  renderTimeline();
+}
+
+// Oversigt: observed radar where a frame exists (up to now), forecast rain after that.
+let overviewRain = null;
+async function overviewPrecip(time) {
+  await showRadarForTime(time);
+  if (!LAYERS[state.layer].radar || state.time !== time) return;
+  // Forecast rain only continues the radar forward in time; hours before the radar
+  // history get no precipitation at all.
+  const lastRadar = state.radarFrames.length ? Date.parse(state.radarFrames[state.radarFrames.length - 1].time) : Date.now();
+  const afterRadar = Date.parse(time) > lastRadar;
+  const rain = overviewRadar || !afterRadar ? null : await loadField('rain', time).catch(() => null);
+  if (!LAYERS[state.layer].radar || state.time !== time) return;
+  setOverviewRain(rain);
+}
+function setOverviewRain(field) {
+  const changed = !!field !== !!overviewRain;
+  overviewRain = field;
+  weather.setOverlay(field ? { field, def: LAYERS.rain, opacity: 0.9 } : null);
+  if (changed) renderLegend();
   renderTimelineLabel();
 }
 
@@ -763,6 +796,12 @@ async function selectLayer(layer) {
   } else if (wasObserved && !state.time) {
     state.time = nearestForecastTime(new Date().toISOString());
   }
+  if (LAYERS[layer].radar) {
+    // Oversigt starts with the radar history: move an earlier hour up to its start.
+    if (!state.radarFrames.length) await loadRadarFrames().catch(() => {});
+    const times = timelineDomain();
+    if (times.length && Date.parse(state.time) < Date.parse(times[0])) state.time = times[0];
+  }
   renderMenu();
   renderTimeline();
   renderStations();
@@ -820,13 +859,13 @@ function exportInfo() {
       sources.add('DMI HARMONIE DINI');
     }
     if (def.radar) {
-      lines.push(['Radar', overviewRadar ? `kl. ${fmtHM.format(new Date(overviewRadar.time))}` : 'ingen for dette tidspunkt']);
+      lines.push(['Nedbør', overviewRadar ? `radar kl. ${fmtHM.format(new Date(overviewRadar.time))}` : overviewRain ? 'regnprognose (DMI HARMONIE DINI)' : 'ingen for dette tidspunkt']);
       if (overviewRadar) sources.add('EUMETNET OPERA radarkomposit (CC BY 4.0)');
     }
   }
   if (state.stations) sources.add('DMI målestationer');
   if (state.fronts) sources.add('vejrfronter beregnet af Vindy');
-  const legend = def.noLegend ? [] : [legendSpec(def), ...(def.radar ? [legendSpec(LAYERS.radar)] : [])];
+  const legend = def.noLegend ? [] : [legendSpec(def), ...(def.radar ? [legendSpec(overviewRain ? LAYERS.rain : LAYERS.radar)] : [])];
   const sourceText = `Kilder: ${[...sources].join(', ')} · Baggrundskort © Esri, HERE, Garmin, © OpenStreetMap-bidragydere · Kystlinjer: Natural Earth / GSHHG · Tider i dansk tid`;
   const d = validIso ? new Date(validIso) : new Date();
   const p = n => String(n).padStart(2, '0');
@@ -921,7 +960,7 @@ function renderLegend() {
   legend.hidden = hide;
   document.body.classList.toggle('no-legend', hide);
   legend.classList.toggle('multi', !!def.radar);
-  legend.innerHTML = def.noLegend ? '' : legendRow(def) + (def.radar ? legendRow(LAYERS.radar) : '');
+  legend.innerHTML = def.noLegend ? '' : legendRow(def) + (def.radar ? legendRow(overviewRain ? LAYERS.rain : LAYERS.radar) : '');
 }
 
 // ---------------------------------------------------------------------------
@@ -929,7 +968,14 @@ function renderLegend() {
 
 function timelineDomain() {
   if (isObserved(state.layer)) return obsFrames().map(f => f.time);
-  return state.meta?.dini?.times || [];
+  const times = state.meta?.dini?.times || [];
+  // Oversigt starts where the radar history starts (the first hour with a radar frame).
+  if (LAYERS[state.layer].radar && state.radarFrames.length) {
+    const first = Date.parse(state.radarFrames[0].time);
+    const fromRadar = times.filter(t => Date.parse(t) + 35 * 60e3 >= first);
+    if (fromRadar.length) return fromRadar;
+  }
+  return times;
 }
 
 function renderTimeline() {
@@ -1002,7 +1048,7 @@ function renderTimelineLabel() {
     const ago = Math.round((Date.now() - Date.parse(t)) / 60000);
     const bubble = handle.querySelector('.tl-bubble');
     bubble.textContent = radar ? `kl. ${fmtHM.format(new Date(t))} · for ${ago} min. siden`
-      : fmtStamp.format(new Date(t)) + (LAYERS[state.layer].radar ? (overviewRadar ? ` · radar kl. ${fmtHM.format(new Date(overviewRadar.time))}` : ' · ingen radar') : '');
+      : fmtStamp.format(new Date(t)) + (LAYERS[state.layer].radar ? (overviewRadar ? ` · radar kl. ${fmtHM.format(new Date(overviewRadar.time))}` : overviewRain ? ' · regnprognose' : '') : '');
     const trackW = $('#tl-track').clientWidth, bw = bubble.offsetWidth, x = trackW * pct / 100;
     const shift = Math.max(bw / 2 - x, Math.min(0, trackW - x - bw / 2));
     bubble.style.transform = `translateX(calc(-50% + ${shift}px))`;
@@ -1279,7 +1325,7 @@ async function boot() {
   loadStations();
   setInterval(loadStations, 5 * 60e3);
   setInterval(async () => {
-    if (LAYERS[state.layer].radar && !state.playing) { state.radarFramesAt = 0; showRadarForTime(state.time); }
+    if (LAYERS[state.layer].radar && !state.playing) { state.radarFramesAt = 0; overviewPrecip(state.time); }
     if (isObserved(state.layer) && !state.playing) {
       const last = state.obsIndex === obsFrames().length - 1;
       await loadObsFrames(state.layer).catch(() => {});

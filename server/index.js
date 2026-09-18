@@ -99,6 +99,10 @@ async function handle(req, res) {
         return send(req, res, 200, body, TYPES[path.extname(file)] || 'application/octet-stream', { 'Cache-Control': 'no-cache', ETag: etag });
       } catch { /* try next */ }
     }
+    if (p === '/kolofon' || p === '/imprint') {
+      const { body, etag } = await readStatic(path.join(ROOT, 'public/kolofon.html'));
+      return send(req, res, 200, body, TYPES['.html'], { 'Cache-Control': 'no-cache', ETag: etag });
+    }
     // App routes such as /overview/56.10,11.00,7 or /radar are handled in the browser:
     // anything that isn't a known asset type gets the app page.
     if (req.method === 'GET' && !TYPES[path.extname(p)]) {
