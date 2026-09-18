@@ -5,7 +5,8 @@ import { WeatherLayer } from './weather-layer.js';
 import { renderForecast, renderForecastLoading } from './forecast.js';
 import { PLACES, searchPlaces } from './places.js';
 import { SatelliteView } from './satellite.js';
-import { captureMap, composeWithMeta, canvasToPng } from './export.js';
+import { captureMap, composeExport, canvasToPng } from './export.js';
+import { mp4Codec, createMp4Encoder, createGifEncoder } from './animation.js';
 
 const L = window.L;
 // Bump when the /api/field or overlay payload format changes (defeats stale HTTP caches).
@@ -814,7 +815,12 @@ async function selectLayer(layer) {
 // ---------------------------------------------------------------------------
 // Export
 
-const exportState = { variant: 'meta', canvases: null, info: null };
+// kind: 'image' (PNG of the current view) or 'video' (MP4/GIF over a period).
+const exportState = { kind: 'image', logo: true, meta: true, time: true, mapCanvas: null, still: null, info: null, anim: null, rendering: false, abort: false };
+try { Object.assign(exportState, JSON.parse(localStorage.getItem('vindy.export') || '{}')); } catch { /* ignore */ }
+const saveExportPrefs = () => { try { localStorage.setItem('vindy.export', JSON.stringify({ kind: exportState.kind, logo: exportState.logo, meta: exportState.meta, time: exportState.time })); } catch { /* ignore */ } };
+// Logo, metadata line and the floating time (always in animations); the sources are always drawn.
+const composeFor = (mapCanvas, info, video, scale) => composeExport(mapCanvas, info, { logo: exportState.logo, meta: exportState.meta, time: video || exportState.time }, scale);
 
 function legendSpec(def) {
   const stops = def.scale;
@@ -866,7 +872,7 @@ function exportInfo() {
   if (state.stations) sources.add('DMI målestationer');
   if (state.fronts) sources.add('vejrfronter beregnet af Vindy');
   const legend = def.noLegend ? [] : [legendSpec(def), ...(def.radar ? [legendSpec(overviewRain ? LAYERS.rain : LAYERS.radar)] : [])];
-  const sourceText = `Kilder: ${[...sources].join(', ')} · Baggrundskort © Esri, HERE, Garmin, © OpenStreetMap-bidragydere · Kystlinjer: Natural Earth / GSHHG · Tider i dansk tid`;
+  const sourceText = `Kort lavet af vindy.dk · Kilder: ${[...sources].join(', ')} · Baggrundskort © Esri, HERE, Garmin, © OpenStreetMap-bidragydere · Kystlinjer: GSHHG · Tider i dansk tid`;
   const d = validIso ? new Date(validIso) : new Date();
   const p = n => String(n).padStart(2, '0');
   const local = new Date(d.toLocaleString('en-US', { timeZone: TZ }));
@@ -874,6 +880,7 @@ function exportInfo() {
   return {
     title: 'Vindy',
     subtitle: def.name,
+    timeLabel: lines[0]?.[1],
     lines,
     legend,
     sources: sourceText,
@@ -891,57 +898,293 @@ function exportInfo() {
 
 async function openExport() {
   map.closePopup();
-  const dialog = $('#export');
-  dialog.hidden = false;
+  stopPlay();
+  $('#export').hidden = false;
+  clearAnimation();
+  exportState.mapCanvas = exportState.still = null;
   $('#export-img').removeAttribute('src');
-  $('#export-status').textContent = 'Laver billede…';
-  $('#export-download').disabled = true;
+  fillAnimationOptions();
+  renderExportPreview();
+  setExportStatus('Laver billede…');
   await new Promise(r => setTimeout(r, 30)); // let the dialog paint before the heavy work
   try {
-    const mapCanvas = captureMap(map);
+    exportState.mapCanvas = captureMap(map);
     exportState.info = exportInfo();
-    exportState.canvases = { plain: mapCanvas, meta: composeWithMeta(mapCanvas, exportState.info) };
-    renderExportPreview();
-    $('#export-download').disabled = false;
   } catch (e) {
-    $('#export-status').textContent = `Billedet kunne ikke laves: ${e.message}`;
+    setExportStatus(`Billedet kunne ikke laves: ${e.message}`);
   }
+  renderExportPreview();
   $('#export-close').focus();
 }
 
+const setExportStatus = text => { $('#export-status').textContent = text; };
+
 function renderExportPreview() {
-  const c = exportState.canvases?.[exportState.variant];
-  document.querySelectorAll('#export [data-variant]').forEach(b => {
-    const on = b.dataset.variant === exportState.variant;
+  const { kind, anim, rendering } = exportState;
+  const mark = (sel, key, value) => document.querySelectorAll(`#export [${sel}]`).forEach(b => {
+    const on = b.dataset[key] === value;
     b.classList.toggle('on', on);
     b.setAttribute('aria-checked', String(on));
   });
-  if (!c) return;
-  $('#export-img').src = c.toDataURL('image/png');
-  $('#export-status').textContent = `${c.width} × ${c.height} px · PNG`;
+  mark('data-kind', 'kind', kind);
+  $('#exp-logo').checked = exportState.logo;
+  $('#exp-meta').checked = exportState.meta;
+  $('#exp-time').checked = exportState.time;
+  const video = kind === 'video';
+  $('#exp-time-switch').hidden = video; // animations always show the time
+  $('#export-note').textContent = video
+    ? 'Tidspunktet vises altid øverst til højre på kortet, og kilderne altid nederst.'
+    : 'Kilderne vises altid nederst på billedet.';
+  $('#anim-options').hidden = !video;
+  $('#anim-render').hidden = !video;
+  $('#anim-render').textContent = rendering ? 'Stop' : 'Forhåndsvis animation';
+  document.querySelectorAll('#anim-options select, #export [data-kind], #export .switch input').forEach(el => { el.disabled = rendering; });
+  const img = $('#export-img'), vid = $('#export-video');
+  // Preview of the current view with the chosen extras (as the first animation frame for video).
+  const still = exportState.mapCanvas && exportState.info ? composeFor(exportState.mapCanvas, exportState.info, video) : null;
+  exportState.still = video ? null : still;
+
+  if (video && anim) {
+    const isMp4 = anim.format === 'mp4';
+    vid.hidden = !isMp4;
+    img.hidden = isMp4;
+    if (isMp4) { if (vid.src !== anim.url) vid.src = anim.url; vid.play().catch(() => {}); } else img.src = anim.url;
+    const mb = (anim.blob.size / 1e6).toFixed(1).replace('.', ',');
+    setExportStatus(`${anim.width} × ${anim.height} px · ${anim.steps} ${anim.unit} · ${anim.seconds} sek. · ${mb} MB · ${isMp4 ? 'MP4' : 'GIF'}`);
+    $('#export-download-label').textContent = `Download ${isMp4 ? 'MP4' : 'GIF'}`;
+    $('#export-download').disabled = false;
+    return;
+  }
+  vid.hidden = true;
+  vid.removeAttribute('src');
+  img.hidden = false;
+  if (still) img.src = still.toDataURL('image/png');
+  if (video) {
+    $('#export-download-label').textContent = `Download ${$('#anim-format').value === 'mp4' ? 'MP4' : 'GIF'}`;
+    // Download works without a preview first: it makes the animation and then saves it.
+    $('#export-download').disabled = rendering;
+    if (!rendering) setExportStatus(animationPlan());
+  } else {
+    $('#export-download-label').textContent = 'Download PNG';
+    $('#export-download').disabled = !still;
+    if (still) setExportStatus(`${still.width} × ${still.height} px · PNG`);
+  }
 }
 
-function closeExport() { $('#export').hidden = true; exportState.canvases = null; }
+function closeExport() {
+  $('#export').hidden = true;
+  if (exportState.rendering) exportState.abort = true;
+  exportState.mapCanvas = exportState.still = null;
+  clearAnimation();
+}
 
-$('#export-close').onclick = closeExport;
-$('#export').addEventListener('click', e => {
-  if (e.target.id === 'export') return closeExport();
-  const v = e.target.closest('[data-variant]');
-  if (v) { exportState.variant = v.dataset.variant; renderExportPreview(); }
-});
-$('#export-download').onclick = async () => {
-  const { canvases, info, variant } = exportState;
-  if (!canvases) return;
-  const blob = await canvasToPng(canvases[variant], variant === 'meta' ? info.text : {});
+function saveBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `${info.filename}${variant === 'meta' ? '' : '_kort'}.png`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+
+$('#export-close').onclick = closeExport;
+$('#export').addEventListener('click', e => {
+  if (e.target.id === 'export') return closeExport();
+  if (exportState.rendering) return;
+  const k = e.target.closest('[data-kind]');
+  if (k) { exportState.kind = k.dataset.kind; saveExportPrefs(); renderExportPreview(); }
+});
+for (const [id, key] of [['#exp-logo', 'logo'], ['#exp-time', 'time'], ['#exp-meta', 'meta']]) {
+  $(id).addEventListener('change', e => { exportState[key] = e.target.checked; saveExportPrefs(); clearAnimation(); renderExportPreview(); });
+}
+$('#anim-options').addEventListener('change', e => {
+  if (e.target.id === 'anim-format') fillSizeOptions();
+  clearAnimation();
+  renderExportPreview();
+});
+$('#anim-render').onclick = () => {
+  if (exportState.rendering) exportState.abort = true;
+  else renderAnimation();
 };
+$('#export-download').onclick = async () => {
+  const { still, info, kind, anim } = exportState;
+  if (kind === 'video') {
+    if (exportState.rendering) return;
+    if (!anim) await renderAnimation();
+    if (exportState.anim && !$('#export').hidden) saveBlob(exportState.anim.blob, exportState.anim.filename);
+    return;
+  }
+  if (!still) return;
+  saveBlob(await canvasToPng(still, info.text), `${info.filename}.png`);
+};
+
+// ---------------------------------------------------------------------------
+// Animation export: step through a period on the real map, capture every frame exactly as
+// the image export does, and encode the frames in the browser (MP4 via WebCodecs, or GIF).
+
+const ANIM_FPS = 20;
+const MP4_SIZES = [[1280, 'HD · 1280'], [1920, 'Full HD · 1920']];
+const GIF_SIZES = [[640, 'Lille · 640'], [960, 'Mellem · 960']];
+
+// The frames an animation can use: forecast hours (Oversigt from the radar history on),
+// radar/satellite frames, or for accumulated rain the end of a window of fixed length.
+function animationDomain() {
+  if (isObserved(state.layer)) return obsFrames().map(f => f.time);
+  if (isRange(state.layer)) { const [s, e] = rangeIdx(); return state.meta.dini.times.slice(e - s); }
+  return timelineDomain();
+}
+
+function fillAnimationOptions() {
+  const domain = animationDomain();
+  const observed = isObserved(state.layer);
+  const label = t => observed ? `kl. ${fmtHM.format(new Date(t))}` : `${fmtDayShort.format(new Date(t))} kl. ${fmtHM.format(new Date(t))}`;
+  const options = domain.map((t, i) => `<option value="${i}">${label(t)}</option>`).join('');
+  $('#anim-from').innerHTML = options;
+  $('#anim-to').innerHTML = options;
+  let from = 0, to = domain.length - 1;
+  if (!observed) {
+    const cur = domain.indexOf(isRange(state.layer) ? rangeTimes()[1] : state.time);
+    from = Math.max(0, cur);
+    to = Math.min(domain.length - 1, from + 24);
+  }
+  $('#anim-from').value = String(from);
+  $('#anim-to').value = String(to);
+  const mp4 = $('#anim-format').querySelector('[value="mp4"]');
+  mp4.disabled = typeof VideoEncoder === 'undefined';
+  if (mp4.disabled) { mp4.textContent = 'MP4-video (ikke understøttet i denne browser)'; $('#anim-format').value = 'gif'; }
+  fillSizeOptions();
+}
+
+function fillSizeOptions() {
+  const sizes = $('#anim-format').value === 'mp4' ? MP4_SIZES : GIF_SIZES;
+  $('#anim-size').innerHTML = sizes.map(([w, name]) => `<option value="${w}">${name}</option>`).join('');
+}
+
+function animationSettings() {
+  let from = Number($('#anim-from').value), to = Number($('#anim-to').value);
+  if (to < from) [from, to] = [to, from];
+  const speed = Number($('#anim-speed').value);
+  const steps = to - from + 1;
+  return { from, to, steps, speed, format: $('#anim-format').value, maxWidth: Number($('#anim-size').value), seconds: Math.round(steps / speed + 1) };
+}
+
+function animationPlan() {
+  const { steps, seconds } = animationSettings();
+  const unit = isObserved(state.layer) ? 'billeder' : 'timer';
+  return `${steps} ${unit} → ca. ${seconds} sek.`;
+}
+
+function clearAnimation() {
+  if (exportState.anim) URL.revokeObjectURL(exportState.anim.url);
+  exportState.anim = null;
+}
+
+// Next paint, with a timer fallback: hidden tabs pause requestAnimationFrame, and the
+// recording should keep going (particles just don't move while the tab is hidden).
+const nextFrame = () => new Promise(r => { requestAnimationFrame(() => r()); setTimeout(r, 80); });
+
+// Wait until everything for the current step is drawn: overlays, radar/rain in Oversigt,
+// and radar or satellite images.
+async function settleMap() {
+  const def = LAYERS[state.layer];
+  const jobs = [];
+  if (!isObserved(state.layer)) for (const k of ['isobars', 'fronts']) if (state[k]) jobs.push(loadOverlay(k, state.time).catch(() => {}));
+  if (def.radar) jobs.push(overviewPrecip(state.time));
+  if (state.layer === 'satellite') { const f = obsFrames()[state.obsIndex]; if (f) jobs.push(satellite.show(f.time)); }
+  await Promise.all(jobs);
+  const imgs = ['radar', 'satellite'].flatMap(p => [...map.getPane(p).querySelectorAll('img')]);
+  await Promise.all(imgs.map(img => img.complete
+    ? null
+    : new Promise(r => { img.addEventListener('load', r, { once: true }); img.addEventListener('error', r, { once: true }); setTimeout(r, 10000); })));
+  await nextFrame();
+}
+
+async function gotoAnimationStep(domain, i) {
+  const t = domain[i];
+  if (isObserved(state.layer)) {
+    state.obsIndex = obsFrames().findIndex(f => f.time === t);
+  } else if (isRange(state.layer)) {
+    const [s, e] = rangeIdx();
+    const times = state.meta.dini.times, j = times.indexOf(t);
+    state.range = { start: times[j - (e - s)], end: t };
+    state.time = t;
+  } else {
+    state.time = t;
+  }
+  await update();
+  await settleMap();
+}
+
+async function renderAnimation() {
+  const opts = animationSettings();
+  const domain = animationDomain();
+  const perStep = opts.format === 'mp4' ? Math.max(1, Math.round(ANIM_FPS / opts.speed)) : 1;
+  const saved = { time: state.time, obsIndex: state.obsIndex, range: state.range && { ...state.range } };
+  const scale = Math.min(2, opts.maxWidth / map.getSize().x);
+  const progress = $('#export-progress');
+  clearAnimation();
+  Object.assign(exportState, { rendering: true, abort: false });
+  renderExportPreview();
+  progress.hidden = false;
+  progress.value = 0;
+  let enc = null, frame = null, fctx = null, filename = '', failure = '';
+  try {
+    for (let i = opts.from; i <= opts.to; i++) {
+      if (exportState.abort) throw new Error('aborted');
+      const n = i - opts.from + 1;
+      setExportStatus(`Tegner ${n} af ${opts.steps}…`);
+      await gotoAnimationStep(domain, i);
+      const info = exportInfo();
+      if (!filename) filename = `${info.filename}_animation.${opts.format}`;
+      for (let k = 0; k < perStep; k++) {
+        await nextFrame(); // wind and wave particles move between the frames of one step
+        const cap = captureMap(map, scale);
+        const src = composeFor(cap, info, true, scale);
+        if (!enc) {
+          // Video sizes must be even; every later frame is drawn into this same canvas.
+          frame = document.createElement('canvas');
+          frame.width = src.width & ~1;
+          frame.height = src.height & ~1;
+          fctx = frame.getContext('2d', { willReadFrequently: opts.format === 'gif' });
+          if (opts.format === 'mp4') {
+            const codec = await mp4Codec(frame.width, frame.height, ANIM_FPS);
+            if (!codec) throw new Error('din browser kan ikke lave MP4-video i denne størrelse – vælg GIF eller en mindre størrelse');
+            enc = await createMp4Encoder({ width: frame.width, height: frame.height, fps: ANIM_FPS, codec });
+          } else {
+            enc = await createGifEncoder({ width: frame.width, height: frame.height });
+          }
+        }
+        fctx.fillStyle = '#10141d';
+        fctx.fillRect(0, 0, frame.width, frame.height);
+        fctx.drawImage(src, 0, 0);
+        await enc.addFrame(frame, Math.round(1000 / opts.speed));
+      }
+      progress.value = n / opts.steps;
+    }
+    // Hold the last frame for a second so the loop doesn't jump straight back.
+    if (opts.format === 'mp4') for (let k = 0; k < ANIM_FPS; k++) await enc.addFrame(frame);
+    else await enc.addFrame(frame, 1000);
+    setExportStatus(opts.format === 'mp4' ? 'Koder video…' : 'Gemmer GIF…');
+    const blob = await enc.finish();
+    exportState.anim = {
+      blob, url: URL.createObjectURL(blob), format: opts.format, filename,
+      width: frame.width, height: frame.height, steps: opts.steps, seconds: opts.seconds,
+      unit: isObserved(state.layer) ? 'billeder' : 'timer',
+    };
+  } catch (e) {
+    enc?.cancel();
+    failure = e.message === 'aborted' ? 'Animationen blev stoppet.' : `Animationen kunne ikke laves: ${e.message}`;
+  } finally {
+    // Put the map back where the user left it.
+    Object.assign(state, saved);
+    exportState.rendering = false;
+    progress.hidden = true;
+    await update();
+    if (!$('#export').hidden) { renderExportPreview(); if (failure) setExportStatus(failure); }
+  }
+}
 
 function legendRow(def) {
   const stops = def.scale;
@@ -1325,6 +1568,7 @@ async function boot() {
   loadStations();
   setInterval(loadStations, 5 * 60e3);
   setInterval(async () => {
+    if (exportState.rendering) return; // don't switch data while an animation is recorded
     if (LAYERS[state.layer].radar && !state.playing) { state.radarFramesAt = 0; overviewPrecip(state.time); }
     if (isObserved(state.layer) && !state.playing) {
       const last = state.obsIndex === obsFrames().length - 1;

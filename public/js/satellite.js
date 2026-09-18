@@ -20,10 +20,11 @@ export class SatelliteView {
 
   setMeta(meta) { this.meta = meta; }
 
+  // Resolves once the image for `time` is on the map (used by the animation export).
   show(time) {
     this.active = true;
     this.time = time;
-    this._render(false);
+    return this._render(false);
   }
 
   hide() {
