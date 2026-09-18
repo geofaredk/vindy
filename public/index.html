@@ -123,17 +123,56 @@
         <button id="export-close" class="icon-btn" aria-label="Luk">✕</button>
       </div>
       <div class="export-body">
-        <div class="seg" role="radiogroup" aria-label="Billedtype">
-          <button type="button" role="radio" data-variant="meta" aria-checked="true" class="on">Med metadata<small>logo, tid, modelkørsel og kilder</small></button>
-          <button type="button" role="radio" data-variant="plain" aria-checked="false">Kun kort<small>kun det, der vises på kortet</small></button>
+        <div class="seg seg-kind" role="radiogroup" aria-label="Hvad vil du downloade?">
+          <button type="button" role="radio" data-kind="image" aria-checked="true" class="on">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M21 16l-5-5-9 9"/></svg>
+            <span>Billede<small>PNG af det, kortet viser nu</small></span>
+          </button>
+          <button type="button" role="radio" data-kind="video" aria-checked="false">
+            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="13" height="14" rx="2.5"/><path d="M16 10l5-3v10l-5-3z"/></svg>
+            <span>Animation<small>MP4-video eller GIF over en periode</small></span>
+          </button>
         </div>
-        <div class="export-preview"><img id="export-img" alt="Forhåndsvisning af billedet"></div>
+        <section class="export-settings" aria-label="Indstillinger">
+          <div id="anim-options" class="anim-options" hidden>
+            <div class="anim-row anim-period">
+              <label>Fra<select id="anim-from"></select></label>
+              <label>Til<select id="anim-to"></select></label>
+              <label>Hastighed<select id="anim-speed">
+                <option value="2">Langsom</option>
+                <option value="4" selected>Normal</option>
+                <option value="8">Hurtig</option>
+              </select></label>
+            </div>
+            <div class="anim-row anim-output">
+              <label>Format<select id="anim-format">
+                <option value="mp4">MP4-video</option>
+                <option value="gif">GIF</option>
+              </select></label>
+              <label>Størrelse<select id="anim-size"></select></label>
+            </div>
+          </div>
+          <div class="export-toggles">
+            <label class="switch"><input type="checkbox" id="exp-logo" checked><i aria-hidden="true"></i><span>Logo<small>Vindy-logo øverst til venstre på kortet</small></span></label>
+            <label class="switch" id="exp-time-switch"><input type="checkbox" id="exp-time" checked><i aria-hidden="true"></i><span>Tid<small>Tidspunkt øverst til højre på kortet</small></span></label>
+            <label class="switch"><input type="checkbox" id="exp-meta" checked><i aria-hidden="true"></i><span>Metadata<small>Lag, tid, modelkørsel og farveskala under kortet</small></span></label>
+          </div>
+          <p id="export-note" class="export-note">Kilderne vises altid nederst på billedet.</p>
+        </section>
+        <div class="export-preview">
+          <img id="export-img" alt="Forhåndsvisning">
+          <video id="export-video" muted loop playsinline autoplay hidden></video>
+        </div>
+        <progress id="export-progress" class="export-progress" max="1" value="0" hidden></progress>
         <div class="export-foot">
           <span id="export-status" class="export-status"></span>
-          <button id="export-download" class="primary-btn" type="button">
-            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
-            Download PNG
-          </button>
+          <div class="export-actions">
+            <button id="anim-render" class="secondary-btn" type="button" hidden>Forhåndsvis animation</button>
+            <button id="export-download" class="primary-btn" type="button">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+              <span id="export-download-label">Download PNG</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

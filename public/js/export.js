@@ -153,8 +153,13 @@ function drawLegend(ctx, legend, x, y, width) {
     roundRect(ctx, bx, yy, bw, rowH, 3); ctx.fill();
     ctx.font = '600 9px Inter, system-ui, sans-serif';
     ctx.textAlign = 'center';
+    let lastRight = -Infinity;
     for (const [p, label] of row.ticks) {
       const tx = Math.min(bx + bw - 8, Math.max(bx + 8, bx + p * bw));
+      // Leave out numbers that would run into the previous one on a short scale.
+      const half = ctx.measureText(label).width / 2;
+      if (tx - half < lastRight + 4) continue;
+      lastRight = tx + half;
       ctx.lineWidth = 2.5; ctx.strokeStyle = 'rgba(0,0,0,.8)'; ctx.strokeText(label, tx, yy + rowH / 2 + 0.5);
       ctx.fillStyle = '#fff'; ctx.fillText(label, tx, yy + rowH / 2 + 0.5);
     }
@@ -162,36 +167,11 @@ function drawLegend(ctx, legend, x, y, width) {
   return legend.length ? legend.length * rowH + (legend.length - 1) * gap : 0;
 }
 
-// meta: { title, subtitle, lines: [[label, value]], sources: string, legend: [{unit, stops, ticks}] }
-export function composeWithMeta(mapCanvas, meta, scale = Math.min(2, window.devicePixelRatio || 1)) {
-  const W = mapCanvas.width / scale;
-  const narrow = W < 640;
-  const pad = 16;
-  const measure = document.createElement('canvas').getContext('2d');
-  measure.font = '400 10px Inter, system-ui, sans-serif';
-  const sourceLines = wrap(measure, meta.sources, W - pad * 2);
-  const legendW = narrow ? W - pad * 2 : Math.min(300, W * 0.3);
-  const legendH = meta.legend.length ? meta.legend.length * 22 - 6 : 0;
-  const topH = narrow ? 44 + 8 + meta.lines.length * 17 + (legendH ? legendH + 12 : 0) : Math.max(44, meta.lines.length * 17, legendH);
-  const H = pad + topH + 12 + sourceLines.length * 14 + pad;
-
-  const out = document.createElement('canvas');
-  out.width = mapCanvas.width;
-  out.height = mapCanvas.height + Math.round(H * scale);
-  const ctx = out.getContext('2d');
-  ctx.drawImage(mapCanvas, 0, 0);
-  ctx.scale(scale, scale);
-  const y0 = mapCanvas.height / scale;
-  ctx.fillStyle = '#10141d';
-  ctx.fillRect(0, y0, W, H);
-  ctx.fillStyle = 'rgba(255,255,255,.08)';
-  ctx.fillRect(0, y0, W, 1);
-
-  // Logo + title
+function drawLogoMark(ctx, x, y, size, radius) {
   ctx.save();
-  ctx.translate(pad, y0 + pad + 2);
-  roundRect(ctx, 0, 0, 40, 40, 9); ctx.clip();
-  ctx.scale(40 / 240, 40 / 240);
+  ctx.translate(x, y);
+  roundRect(ctx, 0, 0, size, size, radius); ctx.clip();
+  ctx.scale(size / 240, size / 240);
   ctx.fillStyle = LOGO.background; ctx.fillRect(0, 0, 240, 240);
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   for (const part of [LOGO.bars, LOGO.mark]) {
@@ -199,35 +179,116 @@ export function composeWithMeta(mapCanvas, meta, scale = Math.min(2, window.devi
     ctx.stroke(new Path2D(part.path));
   }
   ctx.restore();
-  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-  ctx.fillStyle = '#fff'; ctx.font = '700 17px Inter, system-ui, sans-serif';
-  ctx.fillText(meta.title, pad + 52, y0 + pad + 19);
-  ctx.fillStyle = '#cfd6e2'; ctx.font = '500 12px Inter, system-ui, sans-serif';
-  ctx.fillText(meta.subtitle, pad + 52, y0 + pad + 37);
+}
 
-  // Time / run lines
-  const linesX = narrow ? pad : pad + 52 + Math.max(150, measure.measureText(meta.subtitle).width * 1.25 + 24);
-  const linesY = narrow ? y0 + pad + 56 : y0 + pad + 12;
-  meta.lines.forEach(([label, value], k) => {
-    const yy = linesY + k * 17;
-    ctx.font = '400 12px Inter, system-ui, sans-serif'; ctx.fillStyle = '#8f9aad';
-    ctx.fillText(`${label}:`, linesX, yy);
-    const lw = ctx.measureText(`${label}: `).width;
-    ctx.font = '600 12px Inter, system-ui, sans-serif'; ctx.fillStyle = '#fff';
-    ctx.fillText(value, linesX + lw, yy);
-  });
+// A dark rounded "pill" floating on the map.
+function pill(ctx, x, y, w, h) {
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.35)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 1;
+  roundRect(ctx, x, y, w, h, 10);
+  ctx.fillStyle = 'rgba(16,20,29,.82)';
+  ctx.fill();
+  ctx.restore();
+  roundRect(ctx, x, y, w, h, 10);
+  ctx.strokeStyle = 'rgba(255,255,255,.12)'; ctx.lineWidth = 1; ctx.stroke();
+}
 
-  // Legend
-  if (meta.legend.length) {
-    const lx = narrow ? pad : W - pad - legendW;
-    const ly = narrow ? linesY + meta.lines.length * 17 + 2 : y0 + pad + (topH - legendH) / 2;
-    drawLegend(ctx, meta.legend, lx, ly, legendW);
+const FONT = 'Inter, system-ui, sans-serif';
+
+// The exported picture: the map, optionally the Vindy logo floating top left and the
+// time floating top right (always in animations), optionally one metadata line under the map (layer,
+// time, model run, colour scale), and always a strip with the sources.
+// info: { subtitle, lines: [[label, value]], timeLabel, sources, legend: [{unit, stops, ticks}] }
+export function composeExport(mapCanvas, info, { logo = true, meta = true, time = false } = {}, scale = Math.min(2, window.devicePixelRatio || 1)) {
+  const W = mapCanvas.width / scale, MH = mapCanvas.height / scale;
+  const pad = 12;
+  const measure = document.createElement('canvas').getContext('2d');
+
+  // Metadata line: "Layer · Label: value · …" on the left, colour scales on the right.
+  // With the time floating on the map (animations) it is left out of the line.
+  const lines = time ? info.lines.slice(1) : info.lines;
+  const legendW = 170, legendGap = 14;
+  const legendsW = info.legend.length ? info.legend.length * (legendW + 34) + (info.legend.length - 1) * legendGap : 0;
+  measure.font = `400 11px ${FONT}`;
+  const textW = () => {
+    measure.font = `700 12px ${FONT}`;
+    let w = measure.measureText(info.subtitle).width;
+    for (const [label, value] of lines) {
+      measure.font = `400 11px ${FONT}`; w += measure.measureText(` · ${label}: `).width;
+      measure.font = `600 11px ${FONT}`; w += measure.measureText(value).width;
+    }
+    return w;
+  };
+  const oneLine = textW() + legendsW + 24 <= W - pad * 2;
+  const metaH = !meta ? 0 : oneLine ? 34 : 34 + (legendsW ? 26 : 0);
+
+  measure.font = `400 10px ${FONT}`;
+  const sourceLines = wrap(measure, info.sources, W - pad * 2);
+  const sourcesH = 8 + sourceLines.length * 13 + 5;
+
+  const out = document.createElement('canvas');
+  out.width = mapCanvas.width;
+  out.height = mapCanvas.height + Math.round((metaH + sourcesH) * scale);
+  const ctx = out.getContext('2d');
+  ctx.drawImage(mapCanvas, 0, 0);
+  ctx.scale(scale, scale);
+  ctx.textBaseline = 'middle';
+
+  if (logo) {
+    ctx.font = `700 13px ${FONT}`;
+    const label = 'vindy.dk', lw = ctx.measureText(label).width;
+    const w = 8 + 26 + 8 + lw + 12, h = 42, x = pad, y = pad;
+    pill(ctx, x, y, w, h);
+    drawLogoMark(ctx, x + 8, y + 8, 26, 6);
+    ctx.fillStyle = '#fff'; ctx.textAlign = 'left';
+    ctx.fillText(label, x + 42, y + h / 2 + 0.5);
   }
 
-  // Sources
+  if (time && info.timeLabel) {
+    ctx.font = `700 15px ${FONT}`;
+    const tw = ctx.measureText(info.timeLabel).width;
+    ctx.font = `500 11px ${FONT}`;
+    const sw = ctx.measureText(info.subtitle).width;
+    const w = 14 + Math.max(tw, sw) + 14, h = 46, x = W - pad - w, y = pad;
+    pill(ctx, x, y, w, h);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#fff'; ctx.font = `700 15px ${FONT}`;
+    ctx.fillText(info.timeLabel, x + w - 14, y + 17);
+    ctx.fillStyle = '#aab3c2'; ctx.font = `500 11px ${FONT}`;
+    ctx.fillText(info.subtitle, x + w - 14, y + 33);
+  }
+
+  let y = MH;
+  if (meta) {
+    ctx.fillStyle = '#10141d'; ctx.fillRect(0, y, W, metaH);
+    ctx.fillStyle = 'rgba(255,255,255,.08)'; ctx.fillRect(0, y, W, 1);
+    const cy = y + 17;
+    let x = pad;
+    ctx.textAlign = 'left';
+    ctx.font = `700 12px ${FONT}`; ctx.fillStyle = '#fff';
+    ctx.fillText(info.subtitle, x, cy); x += ctx.measureText(info.subtitle).width;
+    for (const [label, value] of lines) {
+      ctx.font = `400 11px ${FONT}`; ctx.fillStyle = '#8f9aad';
+      const l = ` · ${label}: `; ctx.fillText(l, x, cy); x += ctx.measureText(l).width;
+      ctx.font = `600 11px ${FONT}`; ctx.fillStyle = '#e9edf3';
+      ctx.fillText(value, x, cy); x += ctx.measureText(value).width;
+    }
+    if (legendsW) {
+      let lx = oneLine ? W - pad - legendsW : pad;
+      const ly = oneLine ? y + 9 : y + 34;
+      for (const row of info.legend) {
+        drawLegend(ctx, [row], lx, ly, legendW + 34);
+        lx += legendW + 34 + legendGap;
+      }
+    }
+    y += metaH;
+  }
+
+  ctx.fillStyle = '#0c1017'; ctx.fillRect(0, y, W, sourcesH);
+  ctx.fillStyle = 'rgba(255,255,255,.06)'; ctx.fillRect(0, y, W, 1);
   ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
-  ctx.font = '400 10px Inter, system-ui, sans-serif'; ctx.fillStyle = '#8f9aad';
-  sourceLines.forEach((line, k) => ctx.fillText(line, pad, y0 + pad + topH + 12 + 10 + k * 14));
+  ctx.font = `400 10px ${FONT}`; ctx.fillStyle = '#8f9aad';
+  sourceLines.forEach((line, k) => ctx.fillText(line, pad, y + 8 + 9 + k * 13));
   return out;
 }
 

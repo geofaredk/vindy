@@ -61,6 +61,8 @@ Set `PORT` to change the port and `CACHE_DIR` to move the cache.
 - Radar switches the timeline to the last 3 hours of observed frames
 - Overlays (layer menu, collapsible via its header): particles (wind streaks / wave crests), observed DMI station values, forecast values at towns, a value grid, isobars with H/L, and weather fronts
 - URLs name the layer and map view, e.g. `/wind/55.68,12.57,9` (layer, then latitude,longitude,zoom), so a view can be bookmarked or shared. `/radar` alone opens a layer at the default view; old `#layer,lat,lon,zoom` links are redirected.
+- Download (button above the zoom controls): an image (PNG) of exactly what the map shows, or an animation over a chosen period as MP4 video or GIF. Optional extras: the Vindy logo floating top left on the map, the time floating top right (always shown in animations), and a one-line metadata bar under the map (layer, time, model run, colour scales). The sources strip (starting with "Kort lavet af vindy.dk") is always included. Animations are made entirely in the browser: the map steps through the period, each frame is captured like the image export, and the frames are encoded with WebCodecs H.264 + `mp4-muxer` (MP4) or `gifenc` (GIF). The server only serves the same data as when scrubbing the timeline by hand.
+
 
 ## Install as an app (PWA)
 
