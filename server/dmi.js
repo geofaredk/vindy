@@ -349,7 +349,9 @@ async function warmPl(pl) {
 
 async function warmWam(w) {
   const t0 = Date.now();
-  const window = PREFETCH === 'off' ? byDistanceToNow(w.files).slice(0, 12) : prefetchWindow(w);
+  // Wave fields are small (two messages per hour), so every hour is prepared: the map
+  // and the point forecasts then never have to wait for WAM data.
+  const window = PREFETCH === 'off' ? byDistanceToNow(w.files).slice(0, 12) : byDistanceToNow(w.files);
   const result = await runSteps(window.map(t => ({ key: wavesKey(w, t), label: `waves ${t}`, fn: () => getWaves(t, w) })));
   log('prepared WAM', w.run, 'in', ((Date.now() - t0) / 1000).toFixed(0), 's', result.failed ? `, ${result.failed} failed` : '');
   return result;
@@ -714,72 +716,137 @@ function nearestFile(files, time) {
 // Point forecast
 
 const pointMem = new Lru(300);
-const EDR_PARAMS = ['temperature-2m', 'wind-speed-10m', 'wind-dir-10m', 'gust-wind-speed-10m', 'total-precipitation', 'fraction-of-cloud-cover', 'pressure-sealevel', 'relative-humidity-2m'];
-
-let edrPausedUntil = 0;
+// Point forecasts (the meteogram when clicking the map). Values come from the fields the
+// server has already prepared for the map (next 24 hours, accumulated rain for every
+// hour), read a few bytes at a time straight from the cache files. Only hours that aren't
+// prepared are read from DMI's GRIB files. Waves come from the prepared WAM fields. This
+// uses the same model run as the map and doesn't depend on DMI's rate-limited EDR service.
 const POINT_VARS = ['t2m', 'u10', 'v10', 'gust', 'tp', 'tcc', 'mslp', 'rh2m'];
+// Prepared layer -> the GRIB variables it replaces.
+const POINT_LAYERS = { temp: ['t2m'], wind: ['u10', 'v10'], gust: ['gust'], tpacc: ['tp'], clouds: ['tcc'], pressure: ['mslp'], humidity: ['rh2m'] };
+
 export async function pointForecast(lat, lon) {
   lat = Math.round(lat * 50) / 50; lon = Math.round(lon * 50) / 50;
-  const key = `${state.dini?.run}/${lat},${lon}`;
+  const key = `${state.dini?.run}|${state.wam?.run}/${lat},${lon}`;
   const hit = pointMem.get(key);
   if (hit) return hit;
   return once(key, async () => {
-    const waves = pointWaves(lat, lon).catch(() => null);
-    let out;
-    try {
-      // After EDR fails (DMI often answers 429), skip it for a while instead of making
-      // every click wait for the timeout first.
-      if (Date.now() < edrPausedUntil) throw new Error('paused after a recent failure');
-      out = await pointFromEdr(lat, lon);
-    } catch (e) {
-      if (Date.now() >= edrPausedUntil) { edrPausedUntil = Date.now() + 5 * 60e3; log('EDR point failed, reading GRIB for 5 min:', e.message); }
-      out = await pointFromGrib(lat, lon);
-    }
-    out.waves = await waves;
+    const [out, waves] = await Promise.all([pointWeather(lat, lon), pointWaves(lat, lon).catch(() => null)]);
+    out.waves = waves;
     pointMem.set(key, out);
     return out;
   });
 }
 
-async function pointFromEdr(lat, lon) {
-  const url = `${API}/v1/forecastedr/collections/harmonie_dini_sf/position?coords=POINT(${lon}%20${lat})&crs=crs84&parameter-name=${EDR_PARAMS.join(',')}&f=GeoJSON`;
-  const d = await getJson(url, { tries: 1, timeout: 3500 });
-  const rows = d.features.map(f => f.properties).sort((a, b) => a.step.localeCompare(b.step));
-  if (!rows.length) throw new Error('empty');
-  return shapePoint(lat, lon, 'DMI HARMONIE DINI (EDR)', rows.map(r => ({
-    time: r.step.replace('.000Z', 'Z'),
-    temp: r['temperature-2m'] - 273.15,
-    wind: r['wind-speed-10m'], dir: r['wind-dir-10m'], gust: r['gust-wind-speed-10m'],
-    tp: r['total-precipitation'], clouds: r['fraction-of-cloud-cover'] * 100,
-    pressure: r['pressure-sealevel'] / 100, rh: r['relative-humidity-2m'],
+// Grid cell of the prepared fields (2 km over Denmark, 6 km around it) for a location.
+function pointCell(d, lon, lat) {
+  const [x, y] = makeLcc(d.grid).forward(lon, lat);
+  for (const [grid, win] of [['fine', d.win], ['coarse', d.outer]]) {
+    const i = Math.round((x - win.x0) / win.dx), j = Math.round((y - win.y0) / win.dy);
+    if (i >= 0 && j >= 0 && i < win.w && j < win.h) return { grid, index: j * win.w + i };
+  }
+  return null;
+}
+
+async function pointWeather(lat, lon) {
+  const d = state.dini;
+  if (!d) throw new Error('Prognosen er ikke klar endnu');
+  const cell = pointCell(d, lon, lat);
+  const rows = d.files.map(f => ({ time: f.time }));
+  const grib = []; // [file index, variable] still to read from DMI
+  await Promise.all(d.files.map(async (f, fi) => {
+    const r = rows[fi];
+    await Promise.all(Object.entries(POINT_LAYERS).map(async ([layer, vars]) => {
+      const names = layer === 'wind' ? ['u', 'v'] : ['v'];
+      const vals = cell && await readPrepared(fieldKey(d, layer, f.time), () => names.map(name => ({ name, grid: cell.grid, index: cell.index })));
+      if (!vals || vals.some(v => Number.isNaN(v))) { for (const n of vars) grib.push([fi, n]); return; }
+      if (layer === 'wind') { r.ue = vals[0]; r.ve = vals[1]; } else r[layer] = vals[0];
+    }));
+  }));
+
+  if (grib.length) {
+    const P = makeLcc(d.grid);
+    const [x0, y0] = P.forward(d.grid.lo1, d.grid.la1);
+    const [x, y] = P.forward(lon, lat);
+    const i = Math.round((x - x0) / d.grid.dx), j = Math.round((y - y0) / d.grid.dy);
+    const a = P.rotation(lon), c = Math.cos(a), sn = Math.sin(a);
+    const raw = await pool(grib.map(([fi, n]) => async () => {
+      const msg = await getMsg(d.files[fi], n);
+      return [fi, n, msg ? (await readWindow(d.files[fi].url, msg, i, i, j, j))[0] : NaN];
+    }), 64);
+    const got = rows.map(() => ({}));
+    for (const [fi, n, v] of raw) got[fi][n] = v;
+    got.forEach((g, fi) => {
+      const r = rows[fi];
+      if ('t2m' in g) r.temp = g.t2m - 273.15;
+      if ('u10' in g) { r.ue = g.u10 * c + g.v10 * sn; r.ve = -g.u10 * sn + g.v10 * c; }
+      if ('gust' in g) r.gust = g.gust;
+      if ('tp' in g) r.tpacc = g.tp;
+      if ('tcc' in g) r.clouds = g.tcc * 100;
+      if ('mslp' in g) r.pressure = g.mslp / 100;
+      if ('rh2m' in g) r.humidity = g.rh2m;
+    });
+  }
+  return shapePoint(lat, lon, 'DMI HARMONIE DINI', rows.map(r => ({
+    time: r.time, temp: r.temp, wind: Math.hypot(r.ue, r.ve),
+    dir: (Math.atan2(-r.ue, -r.ve) * 180 / Math.PI + 360) % 360, gust: r.gust,
+    tp: Number.isFinite(r.tpacc) ? r.tpacc : 0, clouds: r.clouds, pressure: r.pressure, rh: r.humidity,
   })));
 }
 
-async function pointFromGrib(lat, lon) {
-  const d = state.dini;
-  if (!d) throw new Error('Prognosen er ikke klar endnu');
-  const P = makeLcc(d.grid);
-  const [x0, y0] = P.forward(d.grid.lo1, d.grid.la1);
-  const [x, y] = P.forward(lon, lat);
-  const i = Math.round((x - x0) / d.grid.dx), j = Math.round((y - y0) / d.grid.dy);
-  const names = POINT_VARS;
-  const tasks = [];
-  d.files.forEach((f, fi) => names.forEach(n => tasks.push(async () => {
-    const msg = await getMsg(f, n);
-    return { fi, n, v: msg ? (await readWindow(f.url, msg, i, i, j, j))[0] : NaN };
-  })));
-  const vals = await pool(tasks, 64);
-  const rows = d.files.map(f => ({ time: f.time }));
-  for (const { fi, n, v } of vals) rows[fi][n] = v;
-  const a = P.rotation(lon), c = Math.cos(a), s = Math.sin(a);
-  return shapePoint(lat, lon, 'DMI HARMONIE DINI (GRIB)', rows.map(r => {
-    const ue = r.u10 * c + r.v10 * s, ve = -r.u10 * s + r.v10 * c;
-    return {
-      time: r.time, temp: r.t2m - 273.15, wind: Math.hypot(ue, ve),
-      dir: (Math.atan2(-ue, -ve) * 180 / Math.PI + 360) % 360, gust: r.gust,
-      tp: Number.isFinite(r.tp) ? r.tp : 0, clouds: r.tcc * 100, pressure: r.mslp / 100, rh: r.rh2m,
-    };
-  }));
+// Read single values from a prepared field without loading the whole file: from memory
+// if it's there, otherwise a few small reads from the cache file. pick(header) returns
+// [{ name, grid, index }]. Resolves to null when the field isn't prepared.
+const headerMem = new Lru(2000);
+async function readPrepared(key, pick) {
+  const buf = fieldMem.get(key);
+  if (buf) {
+    const hlen = buf.readUInt32LE(0);
+    const header = headerMem.get(key) || JSON.parse(buf.toString('utf8', 4, 4 + hlen));
+    return pick(header).map(r => valueAt(header, 4 + hlen, r, (off) => buf.readInt16LE(off)));
+  }
+  let fh;
+  try { fh = await fs.open(path.join(CACHE_DIR, key)); } catch { return null; }
+  try {
+    const small = Buffer.alloc(4);
+    await fh.read(small, 0, 4, 0);
+    const hlen = small.readUInt32LE(0);
+    let header = headerMem.get(key);
+    if (!header) {
+      const hb = Buffer.alloc(hlen);
+      await fh.read(hb, 0, hlen, 4);
+      header = JSON.parse(hb.toString('utf8'));
+      headerMem.set(key, header);
+    }
+    const reads = pick(header);
+    const out = [];
+    for (const r of reads) {
+      out.push(await valueAtAsync(header, 4 + hlen, r, async off => { await fh.read(small, 0, 2, off); return small.readInt16LE(0); }));
+    }
+    return out;
+  } finally {
+    await fh.close();
+  }
+}
+function bandOffset(header, base, { name, grid }) {
+  let off = base;
+  for (const b of header.bands) {
+    if (b.name === name && (grid == null || b.grid === grid)) return { b, off };
+    off += b.n * 2;
+  }
+  return null;
+}
+function valueAt(header, base, r, read) {
+  const hit = bandOffset(header, base, r);
+  if (!hit || r.index < 0 || r.index >= hit.b.n) return NaN;
+  const raw = read(hit.off + r.index * 2);
+  return raw === -32768 ? NaN : raw * hit.b.scale + hit.b.offset;
+}
+async function valueAtAsync(header, base, r, read) {
+  const hit = bandOffset(header, base, r);
+  if (!hit || r.index < 0 || r.index >= hit.b.n) return NaN;
+  const raw = await read(hit.off + r.index * 2);
+  return raw === -32768 ? NaN : raw * hit.b.scale + hit.b.offset;
 }
 
 function shapePoint(lat, lon, source, rows) {
@@ -790,13 +857,41 @@ function shapePoint(lat, lon, source, rows) {
   return { lat, lon, source, run: state.dini?.run, rows };
 }
 
+// Wave height and direction from the prepared WAM fields (all hours are prepared). For a
+// point on land close to the coast, the nearest sea cell within about 3 km is used.
 async function pointWaves(lat, lon) {
-  if (lon < 7 || lon > 16 || lat < 53 || lat > 60) return null;
-  const url = `${API}/v1/forecastedr/collections/wam_dw/position?coords=POINT(${lon}%20${lat})&crs=crs84&parameter-name=significant-wave-height,mean-wave-dir,mean-wave-period&f=GeoJSON`;
-  const d = await getJson(url, { tries: 1, timeout: 4000 });
-  const rows = d.features.map(f => f.properties).filter(p => p['significant-wave-height'] != null)
-    .map(p => ({ time: p.step.replace('.000Z', 'Z'), height: p['significant-wave-height'], dir: p['mean-wave-dir'], period: p['mean-wave-period'] }));
-  return rows.length ? rows : null;
+  const w = state.wam;
+  if (!w?.files.length) return null;
+  const cell = await waveCell(w, lat, lon);
+  if (cell == null) return null;
+  const rows = await Promise.all(w.files.map(async f => {
+    const vals = await readPrepared(wavesKey(w, f.time), () => [{ name: 'v', index: cell }, { name: 'dir', index: cell }]);
+    if (!vals || !Number.isFinite(vals[0]) || !Number.isFinite(vals[1])) return null;
+    return { time: f.time, height: vals[0], dir: vals[1] };
+  }));
+  const found = rows.filter(Boolean);
+  return found.length ? found : null;
+}
+
+async function waveCell(w, lat, lon) {
+  const key = wavesKey(w, w.files[0].time);
+  let grid = null;
+  const candidates = [];
+  const centre = await readPrepared(key, h => {
+    grid = h.grid;
+    const i0 = Math.round((lon - grid.lon0) / grid.dlon), j0 = Math.round((lat - grid.lat0) / grid.dlat);
+    const kmX = Math.abs(grid.dlon) * 111 * Math.cos(lat * Math.PI / 180), kmY = Math.abs(grid.dlat) * 111;
+    const ri = Math.ceil(3 / kmX), rj = Math.ceil(3 / kmY);
+    for (let dj = -rj; dj <= rj; dj++) for (let di = -ri; di <= ri; di++) {
+      const i = i0 + di, j = j0 + dj, km = Math.hypot(di * kmX, dj * kmY);
+      if (i >= 0 && j >= 0 && i < grid.w && j < grid.h && km <= 3) candidates.push({ index: j * grid.w + i, km });
+    }
+    candidates.sort((a, b) => a.km - b.km);
+    return candidates.map(c => ({ name: 'v', index: c.index }));
+  });
+  if (!centre) return null;
+  const k = centre.findIndex(Number.isFinite);
+  return k < 0 ? null : candidates[k].index;
 }
 
 // ---------------------------------------------------------------------------
