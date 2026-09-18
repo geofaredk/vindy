@@ -21,6 +21,17 @@ const RAIN_ACC = [
   [5, [40, 175, 110, 215]], [10, [150, 205, 60, 225]], [15, [225, 210, 60, 235]], [25, [240, 140, 40, 240]],
   [40, [225, 60, 45, 245]], [60, [175, 30, 140, 250]], [100, [250, 230, 255, 255]],
 ];
+// Skybrud: nothing below DMI's cloudburst threshold of 15 mm, red to purple above it.
+const CLOUDBURST = [
+  [0, [0, 0, 0, 0]], [14.99, [0, 0, 0, 0]],
+  [15, [215, 30, 45, 240]], [25, [170, 20, 120, 250]], [40, [110, 20, 160, 255]],
+];
+// Skybrud (sandsynlighed): the share of DMI's ensemble members with ≥ 15 mm in one hour.
+// Nothing below 5 % (about one member), then yellow → red → purple up to 50 %.
+const CLOUDBURST_P = [
+  [0, [0, 0, 0, 0]], [4.99, [0, 0, 0, 0]], [5, [250, 205, 60, 190]], [10, [245, 140, 40, 215]],
+  [25, [215, 30, 45, 240]], [50, [120, 20, 160, 255]],
+];
 const CLOUDS = [
   [0, [40, 70, 115]], [20, [70, 95, 130]], [50, [120, 135, 155]], [80, [180, 188, 198]], [100, [228, 232, 238]],
 ];
@@ -54,6 +65,8 @@ export const LAYERS = {
   gust: { name: 'Vindstød', group: 'forecast', unit: 'm/s', scale: WIND, icon: 'gust', digits: 1, ticks: [0, 5, 10, 15, 20, 25, 30] },
   rain: { name: 'Regn', group: 'forecast', unit: 'mm/t', scale: RAIN, icon: 'rain', digits: 1, ticks: [0.1, 1, 2, 4, 7, 10, 20], log: true },
   // Accumulated between two hours chosen with the range handles on the timeline.
+  cloudburst: { name: 'Skybrud', group: 'forecast', unit: 'mm/t', scale: CLOUDBURST, icon: 'cloudburst', digits: 1, ticks: [15, 25, 40] },
+  cloudburstp: { name: 'Skybrud (sandsynlighed)', group: 'forecast', unit: '%', scale: CLOUDBURST_P, icon: 'cloudburst', digits: 0, ticks: [5, 10, 25, 50] },
   rainacc: { name: 'Regn akkumuleret', group: 'forecast', unit: 'mm', scale: RAIN_ACC, icon: 'rainacc', digits: 1, ticks: [1, 2, 5, 10, 25, 50, 100], log: true, range: true },
   temp: { name: 'Temperatur', group: 'forecast', unit: '°C', scale: TEMP, icon: 'temp', digits: 1, ticks: [-10, -5, 0, 5, 10, 15, 20, 25, 30] },
   dewpoint: { name: 'Dugpunkt', group: 'forecast', unit: '°C', scale: TEMP, icon: 'dew', digits: 1, ticks: [-10, -5, 0, 5, 10, 15, 20, 25] },
@@ -100,6 +113,7 @@ export const ICONS = {
   wind: '<path d="M3 8h10a3 3 0 1 0-3-3M3 12h15a3 3 0 1 1-3 3M3 16h7"/>',
   gust: '<path d="M3 7h9a2.5 2.5 0 1 0-2.5-2.5M3 11h14a3 3 0 1 1-3 3M3 15h6M13 18l2 3M17 17l2 3"/>',
   rain: '<path d="M7 15a4 4 0 0 1-.6-7.95A5.5 5.5 0 0 1 17 7a4 4 0 0 1 1 8"/><path d="M8 18l-1 3M12 18l-1 3M16 18l-1 3"/>',
+  cloudburst: '<path d="M7 13a4 4 0 0 1-.6-7.95A5.5 5.5 0 0 1 17 5a3.5 3.5 0 0 1 .5 7"/><path d="M8 15l-1.5 6M12 15l-1.5 6M16 15l-1.5 6" stroke-width="2.4"/>',
   rainacc: '<path d="M7 13a4 4 0 0 1-.6-7.95A5.5 5.5 0 0 1 17 5a3.5 3.5 0 0 1 .5 7"/><path d="M6 16h12M6 20h12M9 16v4M15 16v4"/>',
   temp: '<path d="M10 14V4a2 2 0 1 1 4 0v10a4 4 0 1 1-4 0z"/><path d="M12 9v7"/>',
   dew: '<path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/>',

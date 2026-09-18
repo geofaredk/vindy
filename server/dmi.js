@@ -23,7 +23,7 @@ const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 //   24h  – additionally every layer for the next 24 hours (default)
 //   all  – every layer for every hour of the run
 const PREFETCH = (process.env.PREFETCH || '24h').toLowerCase();
-const PREFETCH_LAYERS = ['pressure', 'wind', 'windp', 'temp', 'rain', 'gust', 'clouds', 'lowclouds', 'humidity', 'dewpoint', 'visibility', 'cape']; // waves: see warmWam
+const PREFETCH_LAYERS = ['pressure', 'wind', 'windp', 'temp', 'rain', 'cloudburst', 'gust', 'clouds', 'lowclouds', 'humidity', 'dewpoint', 'visibility', 'cape']; // waves: see warmWam
 
 // ---------------------------------------------------------------------------
 // Model run discovery
@@ -75,6 +75,7 @@ const state = {
   dini: null, // HARMONIE surface: { run, files:[{url,time,index}], grid, win, outer, complete }
   pl: null, // HARMONIE pressure levels (fronts)
   wam: null, // WAM waves: { run, files }
+  eps: null, // HARMONIE DINI EPS percentiles (cloudburst probability): { run, files }
 };
 
 // A rectangular index window of the model grid covering `bounds`, optionally
@@ -166,7 +167,7 @@ function headAt(file, offset) {
 
 // Drop in-memory data of a replaced run right away (disk files go in pruneCache).
 function forgetRun(kind, run) {
-  const prefix = `field/${{ dini: '', pl: 'pl_', wam: 'wam_' }[kind]}${run.replace(/:/g, '')}/`;
+  const prefix = `field/${{ dini: '', pl: 'pl_', wam: 'wam_', eps: 'eps_' }[kind]}${run.replace(/:/g, '')}/`;
   for (const key of [...fieldMem.map.keys()]) if (key.startsWith(prefix)) fieldMem.delete(key);
 }
 
@@ -180,7 +181,7 @@ function forgetRun(kind, run) {
 // retries just the missing pieces. The active runs are remembered on disk, so a restart
 // serves them immediately instead of starting from scratch.
 
-const pending = { dini: null, pl: null, wam: null }; // runs being prepared, not yet served
+const pending = { dini: null, pl: null, wam: null, eps: null }; // runs being prepared, not yet served
 const STATE_FILE = 'state.json';
 
 async function buildRun(run, files) {
@@ -200,7 +201,7 @@ async function buildPl(run, files) {
 
 async function saveState() {
   const pick = m => m && { run: m.run, files: m.files.map(({ id, url, time }) => ({ id, url, time })) };
-  await diskPut(STATE_FILE, JSON.stringify({ dini: pick(state.dini), pl: pick(state.pl), wam: pick(state.wam) }))
+  await diskPut(STATE_FILE, JSON.stringify({ dini: pick(state.dini), pl: pick(state.pl), wam: pick(state.wam), eps: pick(state.eps) }))
     .catch(e => log('saving state failed:', e.message));
 }
 
@@ -217,6 +218,7 @@ export async function restore() {
     usable(saved.pl) && buildPl(saved.pl.run, saved.pl.files).then(d => { state.pl = d; }),
   ].map(p => p && p.catch(e => log('restoring cached run failed:', e.message))));
   if (usable(saved.wam)) state.wam = { run: saved.wam.run, files: saved.wam.files };
+  if (usable(saved.eps)) state.eps = buildEps(saved.eps.run, saved.eps.files);
   log('restored cached runs in', Date.now() - t0, 'ms:', `DINI ${state.dini?.run ?? '–'}, PL ${state.pl?.run ?? '–'}, WAM ${state.wam?.run ?? '–'}`);
 }
 
@@ -259,18 +261,20 @@ async function updateModel(kind, label, latest, build, warm) {
 
 const refreshDini = async () => updateModel('dini', 'DINI', await findLatestRun('harmonie_dini_sf', 3, 61), buildDini, warmDini);
 const refreshPl = async () => updateModel('pl', 'DINI pressure levels', await findLatestRun('harmonie_dini_pl', 3, 61), buildPl, warmPl);
+const buildEps = (run, files) => ({ run, files: files.map(f => ({ ...f })) });
+const refreshEps = async () => updateModel('eps', 'DINI EPS', await findLatestRun('harmonie_dini_eps_percentiles', 3, 55), async (run, files) => buildEps(run, files), warmEps);
 const refreshWam = async () => updateModel('wam', 'WAM', await findLatestRun('wam_dw', 6, 60), async (run, files) => ({ run, files }), warmWam);
 
 // Drop cached indexes and fields of runs that are neither served nor being prepared.
 async function pruneCache() {
   const runs = kind => [state[kind]?.run, pending[kind]?.run].filter(Boolean);
   const tag = run => `${run.slice(0, 10)}T${run.slice(11, 13)}0000Z`;
-  const keepIdx = [...runs('dini').map(r => `HARMONIE_DINI_SF_${tag(r)}`), ...runs('pl').map(r => `HARMONIE_DINI_PL_${tag(r)}`)];
+  const keepIdx = [...runs('dini').map(r => `HARMONIE_DINI_SF_${tag(r)}`), ...runs('pl').map(r => `HARMONIE_DINI_PL_${tag(r)}`), ...runs('eps').map(r => `HARMONIE_DINI_EPS_PERCENTILES_${tag(r)}`)];
   for (const f of await fs.readdir(path.join(CACHE_DIR, 'idx')).catch(() => [])) {
     if (!keepIdx.some(k => f.startsWith(k))) await fs.rm(path.join(CACHE_DIR, 'idx', f), { force: true });
   }
   const dir = r => r.replace(/:/g, '');
-  const keepDirs = [...runs('dini').map(dir), ...runs('pl').map(r => `pl_${dir(r)}`), ...runs('wam').map(r => `wam_${dir(r)}`)];
+  const keepDirs = [...runs('dini').map(dir), ...runs('pl').map(r => `pl_${dir(r)}`), ...runs('wam').map(r => `wam_${dir(r)}`), ...runs('eps').map(r => `eps_${dir(r)}`)];
   for (const d of await fs.readdir(path.join(CACHE_DIR, 'field')).catch(() => [])) {
     if (!keepDirs.includes(d)) await fs.rm(path.join(CACHE_DIR, 'field', d), { recursive: true, force: true });
   }
@@ -347,6 +351,17 @@ async function warmPl(pl) {
   return result;
 }
 
+// Ensemble cloudburst probability for the next 24 hours (about 8 MB of DMI data per hour).
+async function warmEps(e) {
+  const t0 = Date.now();
+  const d = state.dini;
+  if (!d) return { failed: 1, total: 1 };
+  const window = prefetchWindow(d).filter(t => e.files.some(f => f.time === t));
+  const result = await runSteps(window.map(t => ({ key: epsKey(e, t), label: `ensemble ${t}`, fn: () => getCloudburstProb(t, d, e) })));
+  log('prepared DINI EPS', e.run, `(${window.length} h)`, 'in', ((Date.now() - t0) / 1000).toFixed(0), 's', result.failed ? `, ${result.failed} failed` : '');
+  return result;
+}
+
 async function warmWam(w) {
   const t0 = Date.now();
   // Wave fields are small (two messages per hour), so every hour is prepared: the map
@@ -360,6 +375,7 @@ async function warmWam(w) {
 const runDir = d => `field/${d.run.replace(/:/g, '')}`;
 const fieldKey = (d, layer, time, ext = 'bin') => `${runDir(d)}/v2_${layer}_${time.replace(/:/g, '')}.${ext}`;
 const frontsKey = (pl, time) => `field/pl_${pl.run.replace(/:/g, '')}/fronts_${time.replace(/:/g, '')}.json`;
+const epsKey = (e, time) => `field/eps_${e.run.replace(/:/g, '')}/v1_cbprob_${time.replace(/:/g, '')}.bin`;
 const wavesKey = (w, time) => `field/wam_${w.run.replace(/:/g, '')}/v3_waves_${time.replace(/:/g, '')}.bin`;
 
 const FRONT_BOUNDS = OUTER_BOUNDS;
@@ -421,6 +437,7 @@ export async function refresh() {
       refreshDini().catch(e => log('DINI refresh failed:', e.message)),
       refreshWam().catch(e => log('WAM refresh failed:', e.message)),
       refreshPl().catch(e => log('DINI PL refresh failed:', e.message)),
+      refreshEps().catch(e => log('DINI EPS refresh failed:', e.message)),
     ]);
     if (state.dini && state.pl) await pruneCache().catch(e => log('pruning cache failed:', e.message));
   } finally {
@@ -439,6 +456,7 @@ export function meta() {
       grids: { fine: gridMeta(d, d.win), coarse: gridMeta(d, d.outer) },
     },
     wam: w && { run: w.run, times: w.files.map(f => f.time) },
+    eps: state.eps && { run: state.eps.run, times: state.eps.files.map(f => f.time) },
   };
 }
 
@@ -467,6 +485,8 @@ const DINI_LAYERS = {
   visibility: async (f, i, d, win) => [{ name: 'v', data: map(await readVar(f, win, 'vis'), v => v / 1000), scale: 0.05 }],
   cape: async (f, i, d, win) => [{ name: 'v', data: map(await readVar(f, win, 'cape'), v => v), scale: 5 }],
   rain: null, // hourly rain is derived from 'tpacc' in getHourlyRain
+  cloudburst: null, // derived from the hourly rain in getCloudburst
+  cloudburstp: null, // ensemble probability, see getCloudburstProb
   // Total precipitation accumulated since the model run started (mm). The browser
   // subtracts two of these to get the amount between any two hours.
   tpacc: async (f, i, d, win) => {
@@ -499,6 +519,8 @@ export async function getField(layer, time, d = state.dini) {
   if (layer === 'waves') return getWaves(time);
   if (layer === 'windp') return getParticleWind(time, d);
   if (layer === 'rain') return getHourlyRain(time, d);
+  if (layer === 'cloudburst') return getCloudburst(time, d);
+  if (layer === 'cloudburstp') return getCloudburstProb(time, d);
   if (!d) throw new Error('Prognosen er ikke klar endnu');
   const builder = DINI_LAYERS[layer];
   if (!builder) throw new Error('Ukendt lag');
@@ -531,7 +553,7 @@ const warmSeen = new Set();
 let warmWorkers = 0;
 export function warmAround(layer, time, radius = 12) {
   const d = state.dini;
-  if (!d || !(layer in DINI_LAYERS) || layer === 'tpacc') return;
+  if (!d || !(layer in DINI_LAYERS) || layer === 'tpacc' || layer === 'cloudburstp') return; // ensemble hours are 8 MB each: only the prepared 24 h
   const i = d.files.findIndex(f => f.time === time);
   if (i < 0) return;
   const jobs = [];
@@ -587,6 +609,107 @@ async function getHourlyRain(time, d = state.dini) {
     fieldMem.set(key, buf);
     return buf;
   });
+}
+
+// Cloudburst layer: the highest hourly rain within about 10 km of each grid cell. DMI calls
+// at least 15 mm in at most 30 minutes a cloudburst; the model only has hourly amounts,
+// and any 30 minutes with 15 mm give an hour with at least 15 mm. Taking the maximum over
+// the surroundings allows for thunderstorms the model puts a little off. The browser
+// shows 15 mm/h and more. No downloads:
+// it is derived from the hourly rain, which comes from the prepared accumulated rain.
+const CLOUDBURST_KM = 10;
+async function getCloudburst(time, d = state.dini) {
+  if (!d) throw new Error('Prognosen er ikke klar endnu');
+  if (!d.files.some(f => f.time === time)) throw new Error('Ukendt tidspunkt');
+  const key = fieldKey(d, 'cloudburst', time);
+  const hit = fieldMem.get(key);
+  if (hit) return hit;
+  return once(key, async () => {
+    let buf = await diskGet(key);
+    if (!buf) {
+      const rain = decodeField(await getHourlyRain(time, d));
+      const bands = rain.bands.map(b => {
+        const g = rain.header.grids[b.grid];
+        const r = Math.max(1, Math.round(CLOUDBURST_KM * 1000 / g.dx));
+        return { name: 'v', grid: b.grid, data: maxFilter(b.data, g.w, g.h, r), scale: 0.01 };
+      });
+      buf = encodeField({ layer: 'cloudburst', time, run: d.run, grids: rain.header.grids }, bands);
+      await diskPut(key, buf);
+    }
+    fieldMem.set(key, buf);
+    return buf;
+  });
+}
+
+// Cloudburst probability from DMI's ensemble (HARMONIE DINI EPS): the percentiles of the
+// 1-hour rain across the ensemble members (0, 10, 25, 50, 75, 90, 100 %) tell how many
+// members give at least 15 mm in the hour. E.g. a 90th percentile of 15 mm means 10 % of
+// the members reach it. The share is interpolated between the percentiles, capped at 50 %
+// (the 50th percentile is the lowest one read), and like the model layer the highest value
+// within about 10 km is shown. Only the 2 km area around Denmark is read (4 × ~2 MB).
+const CB_MM = 15;
+const CB_PERCENTILES = [50, 75, 90, 100];
+async function getCloudburstProb(time, d = state.dini, e = state.eps) {
+  if (!d) throw new Error('Prognosen er ikke klar endnu');
+  if (!e) throw new Error('Ensembleprognosen er ikke klar endnu');
+  const f = e.files.find(x => x.time === time);
+  if (!f) throw new Error('Ensembleprognosen dækker ikke dette tidspunkt');
+  const key = epsKey(e, time);
+  const hit = fieldMem.get(key);
+  if (hit) return hit;
+  return once(key, async () => {
+    let buf = await diskGet(key);
+    if (!buf) {
+      const idx = await once(`index:${f.id}`, () => indexWithCache(f));
+      const win = d.win;
+      const q = await Promise.all(CB_PERCENTILES.map(async pct => {
+        const msg = idx.find(m => m.pdt === 10 && m.category === 1 && m.number === 52 && m.rangeHours === 1 && m.percentile === pct);
+        if (!msg) throw Object.assign(new Error(`${pct}. percentil mangler`), { missing: true });
+        const g = msg.grid;
+        if (g.nx !== d.grid.nx || g.ny !== d.grid.ny || Math.abs(g.lo1 - d.grid.lo1) > 1e-4 || Math.abs(g.la1 - d.grid.la1) > 1e-4) throw new Error('Ensemblegitteret passer ikke');
+        return readWindow(f.url, msg, win.i0, win.i1, win.j0, win.j1);
+      }));
+      const [p50, p75, p90, p100] = q;
+      const prob = new Float32Array(win.w * win.h);
+      const between = (lo, hi, vlo, vhi) => 100 - (lo + (hi - lo) * (CB_MM - vlo) / Math.max(1e-6, vhi - vlo));
+      for (let k = 0; k < prob.length; k++) {
+        prob[k] = !(p100[k] >= CB_MM) ? 0
+          : !(p90[k] >= CB_MM) ? between(90, 100, p90[k], p100[k])
+          : !(p75[k] >= CB_MM) ? between(75, 90, p75[k], p90[k])
+          : !(p50[k] >= CB_MM) ? between(50, 75, p50[k], p75[k])
+          : 50;
+      }
+      const r = Math.max(1, Math.round(CLOUDBURST_KM * 1000 / win.dx));
+      buf = encodeField(
+        { layer: 'cloudburstp', time, run: e.run, grids: { fine: gridMeta(d, win) } },
+        [{ name: 'v', grid: 'fine', data: maxFilter(prob, win.w, win.h, r), scale: 0.1 }],
+      );
+      await diskPut(key, buf);
+    }
+    fieldMem.set(key, buf);
+    return buf;
+  });
+}
+
+// Maximum over a (2r+1)² square around each cell, as two 1-D passes (rows, then columns).
+function maxFilter(src, w, h, r) {
+  const tmp = new Float32Array(w * h), out = new Float32Array(w * h);
+  const pass = (from, to, n, count, stride, step) => {
+    for (let line = 0; line < count; line++) {
+      const base = line * stride;
+      for (let k = 0; k < n; k++) {
+        let m = -Infinity;
+        for (let q = Math.max(0, k - r), e = Math.min(n - 1, k + r); q <= e; q++) {
+          const v = from[base + q * step];
+          if (v > m) m = v;
+        }
+        to[base + k * step] = m === -Infinity ? NaN : m;
+      }
+    }
+  };
+  pass(src, tmp, w, h, w, 1); // along rows
+  pass(tmp, out, h, w, 1, w); // along columns
+  return out;
 }
 
 // Light wind field for particle animation on non-wind layers: both grids halved in each

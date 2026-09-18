@@ -553,7 +553,7 @@ function stationLabel(s) {
     return `<span class="st-arrow" style="transform:rotate(${(o.wind_dir ?? 0) + 180}deg)">↑</span>${val.toFixed(0)}`;
   }
   if (layer === 'rainacc') return null;
-  if (layer === 'rain' || layer === 'radar') return o.precip_past1h > 0 ? `${o.precip_past1h.toFixed(1)}<small>mm</small>` : null;
+  if (layer === 'rain' || layer === 'radar' || layer === 'cloudburst' || layer === 'cloudburstp') return o.precip_past1h > 0 ? `${o.precip_past1h.toFixed(1)}<small>mm</small>` : null;
   if (layer === 'pressure') return o.pressure_at_sea != null ? `${Math.round(o.pressure_at_sea)}` : null;
   if (layer === 'humidity') return o.humidity != null ? `${Math.round(o.humidity)}%` : null;
   if (layer === 'dewpoint') return o.temp_dew != null ? `${o.temp_dew.toFixed(0)}°` : null;
