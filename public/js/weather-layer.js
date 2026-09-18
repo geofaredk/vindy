@@ -20,6 +20,7 @@ export class WeatherLayer {
     this.annoCanvas = this._canvas(this.annotationPane);
     this.field = null; // scalar field
     this.layerDef = null;
+    this.overlay = null; // optional second field painted on top, e.g. forecast rain in Oversigt
     this.vectorField = null; // field with u/v (or pu/pv) bands
     this.vectorNames = ['u', 'v'];
     this.particleMode = 'wind';
@@ -49,6 +50,14 @@ export class WeatherLayer {
     this.field = field;
     this.layerDef = layerDef;
     if (layerDef && !layerDef._lutObj) layerDef._lutObj = buildLut(layerDef);
+    this.drawColors();
+  }
+
+  // A second colour field blended over the first (its scale's alpha decides where it shows).
+  setOverlay(overlay) {
+    if (overlay?.def && !overlay.def._lutObj) overlay.def._lutObj = buildLut(overlay.def);
+    if (overlay === this.overlay || (!overlay && !this.overlay)) return;
+    this.overlay = overlay;
     this.drawColors();
   }
 
@@ -143,10 +152,31 @@ export class WeatherLayer {
       px[k * 4] = lut[li]; px[k * 4 + 1] = lut[li + 1]; px[k * 4 + 2] = lut[li + 2];
       px[k * 4 + 3] = lut[li + 3] * alpha;
     }
+    if (this.overlay?.field) this._blendOverlay(px, cw, ch);
     octx.putImageData(img, 0, 0);
     ctx.imageSmoothingEnabled = true;
     ctx.drawImage(this.off, 0, 0, this.view.w, this.view.h);
     this.colorCanvas.style.opacity = 1;
+  }
+
+  // Paint the overlay field over the base colours ("source over" per pixel).
+  _blendOverlay(px, cw, ch) {
+    const { field: f, def, opacity = 0.9 } = this.overlay;
+    const idx = this._partIndices(f);
+    const gi0 = idx[0].gi, gj0 = idx[0].gj, gi1 = idx[1]?.gi, gj1 = idx[1]?.gj;
+    const parts = f.parts, two = parts.length > 1;
+    const { lut, N, index } = def._lutObj;
+    for (let k = 0; k < cw * ch; k++) {
+      const val = sampleParts(parts, 'v', gi0[k], gj0[k], two ? gi1[k] : 0, two ? gj1[k] : 0);
+      if (!(val > 0)) continue;
+      const li = Math.max(0, Math.min(N - 1, index(val))) * 4;
+      const a = (lut[li + 3] / 255) * opacity;
+      if (a <= 0) continue;
+      const o = k * 4, ba = px[o + 3] / 255;
+      const out = a + ba * (1 - a);
+      for (let c = 0; c < 3; c++) px[o + c] = (lut[li + c] * a + px[o + c] * ba * (1 - a)) / out;
+      px[o + 3] = out * 255;
+    }
   }
 
   // ---- annotations: isobars, H/L, fronts, value grid ----

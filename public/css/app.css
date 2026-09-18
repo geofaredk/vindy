@@ -126,6 +126,8 @@ body.ui-hidden .busy, body.ui-hidden .toast, body.ui-hidden .search-results { di
 .info-status dd { margin: 0; color: #fff; }
 kbd { font: 600 11px var(--font); background: rgba(255, 255, 255, .1); border: 1px solid rgba(255, 255, 255, .18); border-radius: 4px; padding: 1px 5px; }
 .disclaimer { margin-top: 18px; font-size: 12px; color: var(--muted); }
+.imprint-link { margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.imprint-link a { color: #cfd6e2; }
 
 /* Bottom bar */
 .bottom { position: fixed; left: calc(12px + var(--sl)); right: calc(12px + var(--sr)); bottom: calc(12px + var(--sb)); z-index: 1000; display: flex; align-items: stretch; gap: 10px; pointer-events: none; transition: right .25s ease; }
