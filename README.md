@@ -22,10 +22,9 @@ EUMETSAT. It is a private, non-commercial hobby project.
 - **Overlays:** animated wind and wave particles, isobars with highs and lows, automatically
   derived weather fronts, forecast values at towns, and a value grid
 - **Point forecast:** click anywhere for an hour-by-hour meteogram, including waves at sea
-- **Timeline:** drag or play through the hours; accumulated rain has a movable window
-- **Download:** save the map as an image (PNG) or as an animation (MP4 or GIF) over a
-  period you choose, with logo, time and sources
-- **Install as an app:** works offline for the interface, with shortcuts to radar, wind and rain
+- **Export:** save the map as an image (PNG) or as an animation (MP4 or GIF) over a
+  period you choose
+- **Progressice Web App:** works offline for the interface, with shortcuts to radar, wind and rain
 - **Search** for Danish places and addresses, and shareable links like `/wind/55.68,12.57,9`
 - Danish interface, dark map, no accounts and no ads
 
@@ -37,13 +36,6 @@ With Docker, which is the recommended way to run it on a server:
 docker compose up -d --build
 ```
 
-Or locally with Node.js 22 or newer:
-
-```bash
-npm install
-npm start
-```
-
 Then open <http://localhost:5173>. No API keys or accounts are needed: the server fetches
 everything from the open data sources itself. The first start takes about 30 seconds while
 it indexes the newest model run; after that, data is cached on disk (about 350 MB).
@@ -51,9 +43,6 @@ it indexes the newest model run; after that, data is cached on disk (about 350 M
 Useful settings: `PORT` and `CACHE_DIR` when running locally, and `PREFETCH` in
 `docker-compose.yml` to control how much of each model run is prepared in advance.
 For HTTPS and a domain, put a reverse proxy such as Caddy in front.
-
-More detail on all of this — how the data is read, cached and updated — is in
-[docs/TECHNICAL.md](docs/TECHNICAL.md).
 
 ## Contributing
 
