@@ -238,12 +238,12 @@ body.menu-open .forecast { right: calc(var(--drawer-w) + 12px); }
 .icon-btn:hover { background: rgba(255, 255, 255, .08); color: #fff; }
 .fc-loading { padding: 18px 14px 22px; color: var(--muted); }
 .fc-body { display: flex; }
-.fc-labels { flex: none; width: 86px; border-right: 1px solid var(--line); }
+.fc-labels { flex: none; width: 92px; border-right: 1px solid var(--line); }
 .fc-l { height: 26px; display: flex; align-items: center; padding-left: 14px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .fc-l-day { height: 20px; }
 .fc-l-temp { height: 82px; }
-.fc-l:nth-child(4) { height: 36px; }
-.fc-l:nth-child(5) { height: 32px; }
+.fc-l-rain { height: 36px; }
+.fc-l-cloud { height: 32px; }
 .fc-scroll { overflow-x: auto; flex: 1; scrollbar-width: thin; padding-bottom: 4px; }
 .fc-row { display: flex; }
 .fc-days { height: 20px; }
@@ -259,6 +259,7 @@ body.menu-open .forecast { right: calc(var(--drawer-w) + 12px); }
 .fc-rain { height: 36px; flex-direction: column; justify-content: flex-end; position: relative; }
 .fc-rain span { font-size: 10px; color: #8cc0ff; position: absolute; top: 0; }
 .fc-bar { width: 26px; background: linear-gradient(#5aa6ff, #2f6fd6); border-radius: 2px 2px 0 0; }
+.fc-acc { font-size: 11px; color: #7fa8d6; }
 .fc-cloud { height: 32px; }
 .fc-wind { color: #fff; font-weight: 600; text-shadow: 0 0 2px rgba(0, 0, 0, .7); border-right: 1px solid rgba(0, 0, 0, .12); }
 .fc-wind .arrow { display: inline-block; font-size: 11px; margin-right: 1px; }

@@ -50,8 +50,9 @@ export function renderForecast(el, data, { onClose, onSelectTime, currentTime })
         <div class="fc-l fc-l-day"></div>
         <div class="fc-l">Kl.</div>
         <div class="fc-l fc-l-temp">Temp. °C</div>
-        <div class="fc-l">Regn mm</div>
-        <div class="fc-l">Skyer</div>
+        <div class="fc-l fc-l-rain">Regn mm/t</div>
+        <div class="fc-l">Regn akk. mm</div>
+        <div class="fc-l fc-l-cloud">Skyer</div>
         <div class="fc-l">Vind m/s</div>
         <div class="fc-l">Vindstød</div>
         <div class="fc-l">Lufttryk</div>
@@ -71,6 +72,7 @@ export function renderForecast(el, data, { onClose, onSelectTime, currentTime })
             </svg>
           </div>
           <div class="fc-row">${rows.map(r => cell(`<div class="fc-bar" style="height:${Math.round(22 * r.precip / maxP)}px"></div><span>${r.precip >= 0.05 ? r.precip.toFixed(1) : ''}</span>`, '', 'fc-rain')).join('')}</div>
+          <div class="fc-row">${rows.map(r => cell(r.acc >= 0.05 ? r.acc.toFixed(1) : '', '', 'fc-acc')).join('')}</div>
           <div class="fc-row">${rows.map(r => cell(cloudIcon(r.clouds, r.precip, r.time), '', 'fc-cloud')).join('')}</div>
           <div class="fc-row">${rows.map(r => cell(`<span class="arrow" style="transform:rotate(${r.dir + 180}deg)">↑</span>${r.wind.toFixed(0)}`, `background:${colorFor(LAYERS.wind, r.wind)}`, 'fc-wind')).join('')}</div>
           <div class="fc-row">${rows.map(r => cell(r.gust != null && Number.isFinite(r.gust) ? r.gust.toFixed(0) : '–', r.gust ? `color:${colorFor(LAYERS.gust, r.gust + 6)}` : '', 'fc-gust')).join('')}</div>

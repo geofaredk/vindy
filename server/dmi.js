@@ -849,10 +849,16 @@ async function valueAtAsync(header, base, r, read) {
   return raw === -32768 ? NaN : raw * hit.b.scale + hit.b.offset;
 }
 
+// precip is the rain during that hour, acc the total since the run started. Both are
+// derived from the accumulation the model reports, so prev has to be kept around.
 function shapePoint(lat, lon, source, rows) {
-  for (let k = 0; k < rows.length; k++) {
-    rows[k].precip = k === 0 ? 0 : Math.max(0, (rows[k].tp ?? 0) - (rows[k - 1].tp ?? 0));
-    delete rows[k].tp;
+  let prev = 0;
+  for (const r of rows) {
+    const tp = Number.isFinite(r.tp) ? r.tp : prev;
+    r.precip = Math.max(0, tp - prev);
+    r.acc = tp;
+    prev = tp;
+    delete r.tp;
   }
   return { lat, lon, source, run: state.dini?.run, rows };
 }

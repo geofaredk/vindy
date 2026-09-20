@@ -1,7 +1,7 @@
 // Vindy service worker: makes the app installable and lets the interface open offline.
 // Weather data (/api/*) always comes from the network so it is never stale; the app shell
 // is network-first (a new deploy shows up on the next load) with the cache as fallback.
-const VERSION = 'vindy-v6';
+const VERSION = 'vindy-v7';
 const SHELL = `${VERSION}-shell`;
 const TILES = `${VERSION}-coast`;
 const PRECACHE = [
