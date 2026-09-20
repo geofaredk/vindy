@@ -69,19 +69,12 @@ const M = {
   u850: { d: 0, c: 2, n: 2, s: 100, l: 85000 },
   v850: { d: 0, c: 2, n: 3, s: 100, l: 85000 },
 };
-const findMsg = (idx, sel) => idx.find(m => matchesVar(m, sel));
-
-// Percentiles of the 1-hour precipitation in the ensemble files: the same variable seven
-// times over, told apart by the percentile in the product definition. The range matters
-// too — from forecast hour three on, the files also carry 6-hour accumulations.
-const EPS_PCTS = [0, 10, 25, 50, 75, 90, 100];
-const epsSel = pct => ({ d: 0, c: 1, n: 52, s: 1, pct, range: 1 });
+const findMsg = (idx, sel) => idx.find(m => m.discipline === sel.d && m.category === sel.c && m.number === sel.n && m.surface === sel.s && (sel.l === undefined || m.level === sel.l));
 
 const state = {
   dini: null, // HARMONIE surface: { run, files:[{url,time,index}], grid, win, outer, complete }
   pl: null, // HARMONIE pressure levels (fronts)
   wam: null, // WAM waves: { run, files }
-  eps: null, // HARMONIE DINI EPS percentiles (rain probability in the point forecast)
 };
 
 // A rectangular index window of the model grid covering `bounds`, optionally
@@ -126,15 +119,13 @@ async function indexWithCache(file) {
   return idx;
 }
 
-const matchesVar = (m, sel) => m.discipline === sel.d && m.category === sel.c && m.number === sel.n && m.surface === sel.s
-  && (sel.l === undefined || m.level === sel.l)
-  && (sel.pct === undefined || m.percentile === sel.pct) && (sel.range === undefined || m.rangeHours === sel.range);
-const sameVar = (m, sel) => !!m && matchesVar(m, sel);
+const sameVar = (m, sel) => m && m.discipline === sel.d && m.category === sel.c && m.number === sel.n && m.surface === sel.s && (sel.l === undefined || m.level === sel.l);
 
 // Locate a variable's GRIB message inside a forecast file. Files of one run share
 // their layout, so we probe the offset from the reference index first (1 request)
 // and only walk the whole file when that guess is wrong.
-async function getMsg(file, name, sel = M[name]) {
+async function getMsg(file, name) {
+  const sel = M[name];
   if (file.msgs[name] !== undefined) return file.msgs[name];
   if (!file.index) {
     const h = await locateMsg(file, sel).catch(() => null);
@@ -175,7 +166,7 @@ function headAt(file, offset) {
 
 // Drop in-memory data of a replaced run right away (disk files go in pruneCache).
 function forgetRun(kind, run) {
-  const prefix = `field/${{ dini: '', pl: 'pl_', wam: 'wam_', eps: 'eps_' }[kind]}${run.replace(/:/g, '')}/`;
+  const prefix = `field/${{ dini: '', pl: 'pl_', wam: 'wam_' }[kind]}${run.replace(/:/g, '')}/`;
   for (const key of [...fieldMem.map.keys()]) if (key.startsWith(prefix)) fieldMem.delete(key);
 }
 
@@ -189,7 +180,7 @@ function forgetRun(kind, run) {
 // retries just the missing pieces. The active runs are remembered on disk, so a restart
 // serves them immediately instead of starting from scratch.
 
-const pending = { dini: null, pl: null, wam: null, eps: null }; // runs being prepared, not yet served
+const pending = { dini: null, pl: null, wam: null }; // runs being prepared, not yet served
 const STATE_FILE = 'state.json';
 
 async function buildRun(run, files) {
@@ -209,7 +200,7 @@ async function buildPl(run, files) {
 
 async function saveState() {
   const pick = m => m && { run: m.run, files: m.files.map(({ id, url, time }) => ({ id, url, time })) };
-  await diskPut(STATE_FILE, JSON.stringify({ dini: pick(state.dini), pl: pick(state.pl), wam: pick(state.wam), eps: pick(state.eps) }))
+  await diskPut(STATE_FILE, JSON.stringify({ dini: pick(state.dini), pl: pick(state.pl), wam: pick(state.wam) }))
     .catch(e => log('saving state failed:', e.message));
 }
 
@@ -224,10 +215,9 @@ export async function restore() {
   await Promise.all([
     usable(saved.dini) && buildDini(saved.dini.run, saved.dini.files).then(d => { state.dini = d; }),
     usable(saved.pl) && buildPl(saved.pl.run, saved.pl.files).then(d => { state.pl = d; }),
-    usable(saved.eps) && buildRun(saved.eps.run, saved.eps.files).then(d => { state.eps = d; }),
   ].map(p => p && p.catch(e => log('restoring cached run failed:', e.message))));
   if (usable(saved.wam)) state.wam = { run: saved.wam.run, files: saved.wam.files };
-  log('restored cached runs in', Date.now() - t0, 'ms:', `DINI ${state.dini?.run ?? '–'}, PL ${state.pl?.run ?? '–'}, WAM ${state.wam?.run ?? '–'}, EPS ${state.eps?.run ?? '–'}`);
+  log('restored cached runs in', Date.now() - t0, 'ms:', `DINI ${state.dini?.run ?? '–'}, PL ${state.pl?.run ?? '–'}, WAM ${state.wam?.run ?? '–'}`);
 }
 
 // Shared update flow for the three models.
@@ -270,14 +260,12 @@ async function updateModel(kind, label, latest, build, warm) {
 const refreshDini = async () => updateModel('dini', 'DINI', await findLatestRun('harmonie_dini_sf', 3, 61), buildDini, warmDini);
 const refreshPl = async () => updateModel('pl', 'DINI pressure levels', await findLatestRun('harmonie_dini_pl', 3, 61), buildPl, warmPl);
 const refreshWam = async () => updateModel('wam', 'WAM', await findLatestRun('wam_dw', 6, 60), async (run, files) => ({ run, files }), warmWam);
-const refreshEps = async () => updateModel('eps', 'DINI EPS', await findLatestRun('harmonie_dini_eps_percentiles', 3, 55), buildRun, warmEps);
 
 // Drop cached indexes and fields of runs that are neither served nor being prepared.
 async function pruneCache() {
   const runs = kind => [state[kind]?.run, pending[kind]?.run].filter(Boolean);
   const tag = run => `${run.slice(0, 10)}T${run.slice(11, 13)}0000Z`;
-  const keepIdx = [...runs('dini').map(r => `HARMONIE_DINI_SF_${tag(r)}`), ...runs('pl').map(r => `HARMONIE_DINI_PL_${tag(r)}`),
-    ...runs('eps').map(r => `HARMONIE_DINI_EPS_PERCENTILES_${tag(r)}`)];
+  const keepIdx = [...runs('dini').map(r => `HARMONIE_DINI_SF_${tag(r)}`), ...runs('pl').map(r => `HARMONIE_DINI_PL_${tag(r)}`)];
   for (const f of await fs.readdir(path.join(CACHE_DIR, 'idx')).catch(() => [])) {
     if (!keepIdx.some(k => f.startsWith(k))) await fs.rm(path.join(CACHE_DIR, 'idx', f), { force: true });
   }
@@ -369,24 +357,6 @@ async function warmWam(w) {
   return result;
 }
 
-// The ensemble is only read one grid cell at a time (rain probability in the point
-// forecast), so nothing is prepared into fields. What is worth doing ahead is locating
-// the seven percentile messages in each file: that turns a click on the map into plain
-// data reads instead of a header hunt through 55 files.
-async function warmEps(e) {
-  const t0 = Date.now();
-  // The first file is the analysis hour, which has no accumulation to read yet.
-  const result = await runSteps(e.files.slice(1).map(f => ({
-    label: `locate ensemble ${f.time}`,
-    fn: async () => {
-      const found = await Promise.all(EPS_PCTS.map(pct => getMsg(f, `tp${pct}`, epsSel(pct))));
-      if (found.some(m => !m)) throw new Error('nedbørsfraktiler mangler');
-    },
-  })));
-  log('located DINI EPS', e.run, `(${e.files.length} h)`, 'in', ((Date.now() - t0) / 1000).toFixed(0), 's', result.failed ? `, ${result.failed} failed` : '');
-  return result;
-}
-
 const runDir = d => `field/${d.run.replace(/:/g, '')}`;
 const fieldKey = (d, layer, time, ext = 'bin') => `${runDir(d)}/v2_${layer}_${time.replace(/:/g, '')}.${ext}`;
 const frontsKey = (pl, time) => `field/pl_${pl.run.replace(/:/g, '')}/fronts_${time.replace(/:/g, '')}.json`;
@@ -451,7 +421,6 @@ export async function refresh() {
       refreshDini().catch(e => log('DINI refresh failed:', e.message)),
       refreshWam().catch(e => log('WAM refresh failed:', e.message)),
       refreshPl().catch(e => log('DINI PL refresh failed:', e.message)),
-      refreshEps().catch(e => log('DINI EPS refresh failed:', e.message)),
     ]);
     if (state.dini && state.pl) await pruneCache().catch(e => log('pruning cache failed:', e.message));
   } finally {
@@ -880,75 +849,18 @@ async function valueAtAsync(header, base, r, read) {
   return raw === -32768 ? NaN : raw * hit.b.scale + hit.b.offset;
 }
 
-// The model reports precipitation accumulated since the run started, so the rain during
-// an hour is the difference to the hour before: prev has to outlive the row it came from.
+// precip is the rain during that hour, acc the total since the run started. Both are
+// derived from the accumulation the model reports, so prev has to be kept around.
 function shapePoint(lat, lon, source, rows) {
   let prev = 0;
   for (const r of rows) {
     const tp = Number.isFinite(r.tp) ? r.tp : prev;
     r.precip = Math.max(0, tp - prev);
+    r.acc = tp;
     prev = tp;
     delete r.tp;
   }
   return { lat, lon, source, run: state.dini?.run, rows };
-}
-
-// ---------------------------------------------------------------------------
-// Rain probability from the ensemble
-
-// "Measurable rain", the usual threshold behind a probability of precipitation.
-const POP_MM = 0.1;
-
-// How many of DMI's ensemble members get at least POP_MM of rain in the hour. The
-// ensemble is published as seven percentiles of the 1-hour precipitation, which is a
-// seven-point sample of the distribution at that grid cell: the percentile at which the
-// amount passes the threshold is read off by interpolating between the two percentiles
-// that bracket it, and the probability is what lies above it. A value that never reaches
-// the threshold means no member has measurable rain, and one that already exceeds it at
-// the lowest percentile means all of them do.
-function probAbove(values, mm) {
-  const pts = EPS_PCTS.map(pct => [pct, values[pct]]).filter(([, v]) => Number.isFinite(v));
-  if (pts.length < 2) return null;
-  if (pts[pts.length - 1][1] < mm) return 0;
-  if (pts[0][1] >= mm) return 100;
-  for (let k = 1; k < pts.length; k++) {
-    const [pa, va] = pts[k - 1], [pb, vb] = pts[k];
-    if (vb >= mm) return Math.round(100 - (pa + (pb - pa) * (vb === va ? 0 : (mm - va) / (vb - va))));
-  }
-  return 0;
-}
-
-const probMem = new Lru(300);
-
-// Hourly rain probability for one point, read a cell at a time from the ensemble files
-// (seven small range requests per hour). Kept out of pointForecast so the meteogram can
-// be drawn from the prepared fields right away and fill this in when it arrives.
-export async function pointRainProb(lat, lon) {
-  lat = Math.round(lat * 50) / 50; lon = Math.round(lon * 50) / 50;
-  const e = state.eps;
-  if (!e) throw new Error('Ensemblet er ikke klar endnu');
-  const key = `${e.run}/${lat},${lon}`;
-  const hit = probMem.get(key);
-  if (hit) return hit;
-  return once(`prob:${key}`, async () => {
-    const P = makeLcc(e.grid);
-    const [x0, y0] = P.forward(e.grid.lo1, e.grid.la1);
-    const [x, y] = P.forward(lon, lat);
-    const i = Math.round((x - x0) / e.grid.dx), j = Math.round((y - y0) / e.grid.dy);
-    if (i < 0 || j < 0 || i >= e.grid.nx || j >= e.grid.ny) return { run: e.run, mm: POP_MM, rows: [] };
-    const rows = await pool(e.files.map(f => async () => {
-      const values = {};
-      await Promise.all(EPS_PCTS.map(async pct => {
-        const msg = await getMsg(f, `tp${pct}`, epsSel(pct));
-        if (msg) values[pct] = (await readWindow(f.url, msg, i, i, j, j))[0];
-      }));
-      const prob = probAbove(values, POP_MM);
-      return prob == null ? null : { time: f.time, prob };
-    }), 8);
-    const out = { run: e.run, mm: POP_MM, rows: rows.filter(Boolean) };
-    probMem.set(key, out);
-    return out;
-  });
 }
 
 // Wave height and direction from the prepared WAM fields (all hours are prepared). For a

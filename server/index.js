@@ -73,11 +73,6 @@ async function handle(req, res) {
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) throw Object.assign(new Error('lat/lon mangler'), { status: 400 });
       return json(req, res, await dmi.pointForecast(lat, lon), 600);
     }
-    if (p === '/api/pointprob') {
-      const lat = Number(url.searchParams.get('lat')), lon = Number(url.searchParams.get('lon'));
-      if (!Number.isFinite(lat) || !Number.isFinite(lon)) throw Object.assign(new Error('lat/lon mangler'), { status: 400 });
-      return json(req, res, await dmi.pointRainProb(lat, lon), 600);
-    }
     if (p === '/api/isobars') {
       const buf = await dmi.getIsobars(url.searchParams.get('time'));
       return send(req, res, 200, buf, 'application/json', { 'Cache-Control': 'max-age=600' });
