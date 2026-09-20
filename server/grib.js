@@ -63,6 +63,9 @@ export function parseHead(buf, offset) {
       const scale = sInt8(s, 23), val = sInt32(s, 24);
       msg.level = s[22] === 255 ? 0 : val * Math.pow(10, -scale);
       if (msg.pdt === 8 && s.length > 58) msg.statProc = s[46];
+      // Ensemble percentile of an accumulation (template 4.10): which percentile, and
+      // over how many hours the amount is accumulated.
+      if (msg.pdt === 10 && s.length > 54) { msg.percentile = s[34]; msg.rangeHours = s[49] === 1 ? s.readUInt32BE(50) : null; }
     } else if (num === 5) {
       msg.npoints = s.readUInt32BE(5);
       msg.drt = s.readUInt16BE(9);

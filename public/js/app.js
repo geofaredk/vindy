@@ -2,7 +2,7 @@ import { LAYERS, icon, colorFor } from './layers.js';
 import { CoastLayer } from './coast-layer.js';
 import { decodeField, decodeFieldRaw, valueAt } from './field.js';
 import { WeatherLayer } from './weather-layer.js';
-import { renderForecast, renderForecastLoading } from './forecast.js';
+import { renderForecast, renderForecastLoading, setRainProb } from './forecast.js';
 import { PLACES, searchPlaces } from './places.js';
 import { SatelliteView } from './satellite.js';
 import { captureMap, composeExport, canvasToPng } from './export.js';
@@ -658,6 +658,13 @@ async function openPoint(lat, lon, name) {
       currentTime: state.time,
       onSelectTime: t => { if (isObserved(state.layer)) selectLayer('overview'); setTime(t); },
     });
+    // The ensemble is read a grid cell at a time and takes a moment longer, so the rain
+    // probability fills its row in once the meteogram is already on screen.
+    fetch(`/api/pointprob?lat=${lat}&lon=${lon}`)
+      .then(res => res.ok ? res.json() : null)
+      .catch(() => null)
+      // Without the ensemble the row stays empty; the rest of the meteogram is unaffected.
+      .then(prob => { if (state.point?.lat === lat && state.point?.lon === lon) setRainProb(panel, prob?.rows || []); });
   } catch (e) {
     if (state.point?.lat === lat) renderForecastLoading(panel, lat, lon, e.message, name).onclick = closePoint;
   }

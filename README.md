@@ -21,7 +21,8 @@ EUMETSAT. It is a private, non-commercial hobby project.
   plus live measurements from DMI's stations
 - **Overlays:** animated wind and wave particles, isobars with highs and lows, automatically
   derived weather fronts, forecast values at towns, and a value grid
-- **Point forecast:** click anywhere for an hour-by-hour meteogram, including waves at sea
+- **Point forecast:** click anywhere for an hour-by-hour meteogram, including the chance of
+  rain from DMI's ensemble and waves at sea
 - **Export:** save the map as an image (PNG) or as an animation (MP4 or GIF) over a
   period you choose
 - **Progressice Web App:** works offline for the interface, with shortcuts to radar, wind and rain
